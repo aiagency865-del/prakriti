@@ -17,6 +17,13 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr, ConfigDict
 
+from ml.hazard_models import (
+    predict_flood,
+    predict_landslide,
+    CORRIDOR_FEATURES,
+    MODEL_VERSION,
+)
+
 
 # --- Config ---
 JWT_SECRET = os.environ["JWT_SECRET"]
@@ -67,6 +74,8 @@ def public_user(u: dict) -> dict:
         "role": u["role"],
         "organization": u.get("organization"),
         "department": u.get("department"),
+        "tokens": u.get("tokens", 0),
+        "report_ban_until": u.get("report_ban_until"),
     }
 
 
@@ -243,6 +252,8 @@ DEMO_ROADS = [
     {"id": "rd-nh13", "name": "NH-13 Itanagar–Pasighat", "road_class": "highway", "district": "East Siang", "status": "OPEN", "risk": 15, "geometry": {"type": "LineString", "coordinates": [[93.61, 27.10], [94.30, 27.80], [95.33, 28.06]]}},
     {"id": "rd-nh502", "name": "NH-502 Imphal–Ukhrul", "road_class": "secondary", "district": "Ukhrul", "status": "UNKNOWN", "risk": 40, "geometry": {"type": "LineString", "coordinates": [[93.94, 24.82], [94.35, 24.98]]}},
     {"id": "rd-nh108", "name": "NH-108 Agartala–Udaipur", "road_class": "highway", "district": "Gomati", "status": "OPEN", "risk": 12, "geometry": {"type": "LineString", "coordinates": [[91.28, 23.83], [91.49, 23.53]]}},
+    {"id": "rd-nh15w", "name": "NH-15 Guwahati–Mangaldai", "road_class": "highway", "district": "Darrang", "status": "OPEN", "risk": 20, "geometry": {"type": "LineString", "coordinates": [[91.75, 26.18], [91.90, 26.32], [92.03, 26.44]]}},
+    {"id": "rd-nh27e", "name": "NH-27 Nagaon–Dimapur", "road_class": "highway", "district": "Karbi Anglong", "status": "OPEN", "risk": 25, "geometry": {"type": "LineString", "coordinates": [[92.32, 26.30], [93.10, 26.05], [93.73, 25.91]]}},
 ]
 
 DEMO_INCIDENTS = [
@@ -272,15 +283,65 @@ DEMO_VEHICLES = [
 ]
 
 DEMO_VILLAGES = [
-    {"id": "vil-majuli", "name": "Majuli Riverine Cluster", "district": "Majuli", "population": 12400, "isolation_risk": "CRITICAL"},
-    {"id": "vil-tuting", "name": "Tuting", "district": "Upper Siang", "population": 3200, "isolation_risk": "CRITICAL"},
-    {"id": "vil-cherrapunji", "name": "Sohra Outskirts", "district": "East Khasi Hills", "population": 5800, "isolation_risk": "HIGH"},
-    {"id": "vil-ziro", "name": "Ziro Valley Hamlets", "district": "Lower Subansiri", "population": 9100, "isolation_risk": "MEDIUM"},
-    {"id": "vil-mon", "name": "Mon Border Villages", "district": "Mon", "population": 7400, "isolation_risk": "HIGH"},
-    {"id": "vil-haflong", "name": "Haflong Periphery", "district": "Dima Hasao", "population": 4200, "isolation_risk": "MEDIUM"},
-    {"id": "vil-mokokchung", "name": "Mokokchung Rural", "district": "Mokokchung", "population": 11200, "isolation_risk": "LOW"},
-    {"id": "vil-tezpur", "name": "Tezpur Riverside", "district": "Sonitpur", "population": 15600, "isolation_risk": "LOW"},
+    {"id": "vil-majuli", "name": "Majuli Riverine Cluster", "district": "Majuli", "population": 12400, "isolation_risk": "CRITICAL", "days_to_stockout": 2, "primary_commodity": "MEDICINE"},
+    {"id": "vil-tuting", "name": "Tuting", "district": "Upper Siang", "population": 3200, "isolation_risk": "CRITICAL", "days_to_stockout": 3, "primary_commodity": "FOOD"},
+    {"id": "vil-cherrapunji", "name": "Sohra Outskirts", "district": "East Khasi Hills", "population": 5800, "isolation_risk": "HIGH", "days_to_stockout": 5, "primary_commodity": "FOOD"},
+    {"id": "vil-ziro", "name": "Ziro Valley Hamlets", "district": "Lower Subansiri", "population": 9100, "isolation_risk": "MEDIUM", "days_to_stockout": 9, "primary_commodity": "FUEL"},
+    {"id": "vil-mon", "name": "Mon Border Villages", "district": "Mon", "population": 7400, "isolation_risk": "HIGH", "days_to_stockout": 6, "primary_commodity": "MEDICINE"},
+    {"id": "vil-haflong", "name": "Haflong Periphery", "district": "Dima Hasao", "population": 4200, "isolation_risk": "MEDIUM", "days_to_stockout": 11, "primary_commodity": "FOOD"},
+    {"id": "vil-mokokchung", "name": "Mokokchung Rural", "district": "Mokokchung", "population": 11200, "isolation_risk": "LOW", "days_to_stockout": 18, "primary_commodity": "FOOD"},
+    {"id": "vil-tezpur", "name": "Tezpur Riverside", "district": "Sonitpur", "population": 15600, "isolation_risk": "LOW", "days_to_stockout": 21, "primary_commodity": "WATER"},
 ]
+
+DEMO_DELIVERIES = [
+    {"id": "DEL-8801", "vehicle": "TRK-204", "origin": "Guwahati", "destination": "Nagaon", "commodity": "MEDICINE", "status": "ON_TRACK", "eta_minutes": 192, "risk": 32, "road": "NH-27"},
+    {"id": "DEL-8802", "vehicle": "TRK-118", "origin": "Mangaldai", "destination": "Tezpur", "commodity": "FOOD", "status": "DELAYED", "eta_minutes": 78, "risk": 55, "road": "NH-15"},
+    {"id": "DEL-8803", "vehicle": "LTV-332", "origin": "Guwahati", "destination": "Goalpara", "commodity": "WATER", "status": "ON_TRACK", "eta_minutes": 95, "risk": 18, "road": "NH-17"},
+    {"id": "DEL-8804", "vehicle": "TRK-451", "origin": "Guwahati", "destination": "Nagaon", "commodity": "FUEL", "status": "AT_RISK", "eta_minutes": 240, "risk": 71, "road": "NH-27"},
+    {"id": "DEL-8805", "vehicle": "SUV-517", "origin": "Silchar", "destination": "Aizawl", "commodity": "MEDICINE", "status": "ON_TRACK", "eta_minutes": 66, "risk": 47, "road": "SH-9"},
+    {"id": "DEL-8806", "vehicle": "TRK-620", "origin": "Dimapur", "destination": "Kohima", "commodity": "CONSTRUCTION", "status": "DELAYED", "eta_minutes": 310, "risk": 88, "road": "NH-29"},
+    {"id": "DEL-8807", "vehicle": "LTV-733", "origin": "Tezpur", "destination": "Jorhat", "commodity": "FOOD", "status": "ON_TRACK", "eta_minutes": 120, "risk": 22, "road": "NH-715"},
+    {"id": "DEL-8808", "vehicle": "TRK-905", "origin": "Agartala", "destination": "Udaipur", "commodity": "FOOD", "status": "ON_TRACK", "eta_minutes": 42, "risk": 12, "road": "NH-108"},
+]
+
+DEMO_FIELD_REPORTS = [
+    {"id": "FR-1002", "officer_email": "field@neris.demo", "officer_name": "R. Marak", "type": "ROAD_DAMAGE", "description": "Asphalt scouring near culvert, single lane passable", "road_id": "rd-sh9", "location": "SH-9, Barak valley", "lat": 24.55, "lng": 92.77, "severity": "WARNING", "status": "VERIFIED", "created_minutes_ago": 95},
+    {"id": "FR-1001", "officer_email": "field@neris.demo", "officer_name": "R. Marak", "type": "LANDSLIDE", "description": "Fresh debris slide onto shoulder, work crew on site", "road_id": "rd-nh6", "location": "NH-6, near Sonapur", "lat": 26.07, "lng": 91.63, "severity": "HIGH", "status": "SUBMITTED", "created_minutes_ago": 40},
+]
+
+DEMO_ENVIRONMENT = [
+    {"id": "rain-shillong", "kind": "RAIN", "name": "Meghalaya Hills rain cell", "lat": 25.60, "lng": 91.62, "base_intensity_mm_h": 28, "base_radius_km": 40},
+    {"id": "rain-tezpur", "kind": "RAIN", "name": "Tezpur valley rain", "lat": 26.63, "lng": 92.80, "base_intensity_mm_h": 14, "base_radius_km": 30},
+    {"id": "rain-barak", "kind": "RAIN", "name": "Barak valley monsoon band", "lat": 24.60, "lng": 92.75, "base_intensity_mm_h": 22, "base_radius_km": 35},
+    {"id": "ls-sonapur", "kind": "LANDSLIDE", "name": "Sonapur slope", "lat": 26.07, "lng": 91.63, "slide_type": "DEBRIS_FLOW", "probability": 0.78},
+    {"id": "ls-kohima", "kind": "LANDSLIDE", "name": "Kohima bypass cut slope", "lat": 25.78, "lng": 93.90, "slide_type": "ROCKFALL", "probability": 0.66},
+    {"id": "ls-aizawl", "kind": "LANDSLIDE", "name": "Aizawl–Silchar road cut", "lat": 24.00, "lng": 92.80, "slide_type": "SHALLOW_SLIDE", "probability": 0.58},
+]
+
+
+def _current_environment(events):
+    """Simulated live weather: intensity oscillates over time so the map visibly updates (DEMO)."""
+    now = datetime.now(timezone.utc)
+    t = now.hour * 60 + now.minute + now.second / 60.0
+    rain = []
+    landslides = []
+    for e in events:
+        if e["kind"] == "RAIN":
+            phase = (sum(ord(c) for c in e["id"]) % 100) / 100.0 * 6.283
+            factor = 1 + 0.35 * math.sin(t * 0.35 + phase)
+            intensity = round(e["base_intensity_mm_h"] * factor, 1)
+            radius = round(e["base_radius_km"] * (0.7 + 0.3 * factor), 1)
+            rain.append({
+                "id": e["id"], "kind": "RAIN", "name": e["name"], "lat": e["lat"], "lng": e["lng"],
+                "intensity_mm_h": intensity, "radius_km": radius,
+                "level": "HEAVY" if intensity >= 20 else "MODERATE",
+            })
+        elif e["kind"] == "LANDSLIDE":
+            landslides.append({
+                "id": e["id"], "kind": "LANDSLIDE", "name": e["name"], "lat": e["lat"], "lng": e["lng"],
+                "slide_type": e["slide_type"], "probability": e["probability"],
+            })
+    return {"rain": rain, "landslides": landslides}
 
 DEMO_SUPPLY = [
     {"commodity": "MEDICINE", "at_risk_count": 7, "severity": "CRITICAL"},
@@ -290,17 +351,25 @@ DEMO_SUPPLY = [
 ]
 
 
+SEED_VERSION = 5
+
+
 async def seed_dashboard():
-    if await db.roads.count_documents({}) == 0:
-        await db.roads.insert_many([{**r, "source": "DEMO"} for r in DEMO_ROADS])
-    if await db.incidents.count_documents({}) == 0:
-        await db.incidents.insert_many([{**i, "source_tag": "DEMO"} for i in DEMO_INCIDENTS])
-    if await db.vehicles.count_documents({}) == 0:
-        await db.vehicles.insert_many([{**v, "source": "DEMO"} for v in DEMO_VEHICLES])
-    if await db.villages.count_documents({}) == 0:
-        await db.villages.insert_many([{**v, "source": "DEMO"} for v in DEMO_VILLAGES])
-    if await db.supply_risks.count_documents({}) == 0:
-        await db.supply_risks.insert_many([{**s, "source": "DEMO"} for s in DEMO_SUPPLY])
+    meta = await db.meta.find_one({"key": "seed_version"})
+    current = meta["value"] if meta else 0
+    if current >= SEED_VERSION:
+        return
+    for coll in ["roads", "incidents", "vehicles", "villages", "supply_risks", "deliveries", "field_reports", "environment_events"]:
+        await db[coll].delete_many({})
+    await db.roads.insert_many([{**r, "source": "DEMO"} for r in DEMO_ROADS])
+    await db.incidents.insert_many([{**i, "source_tag": "DEMO"} for i in DEMO_INCIDENTS])
+    await db.vehicles.insert_many([{**v, "source": "DEMO"} for v in DEMO_VEHICLES])
+    await db.villages.insert_many([{**v, "source": "DEMO"} for v in DEMO_VILLAGES])
+    await db.supply_risks.insert_many([{**s, "source": "DEMO"} for s in DEMO_SUPPLY])
+    await db.deliveries.insert_many([{**d, "source": "DEMO"} for d in DEMO_DELIVERIES])
+    await db.field_reports.insert_many([{**f, "source": "DEMO"} for f in DEMO_FIELD_REPORTS])
+    await db.environment_events.insert_many([{**e, "source": "DEMO"} for e in DEMO_ENVIRONMENT])
+    await db.meta.update_one({"key": "seed_version"}, {"$set": {"value": SEED_VERSION}}, upsert=True)
 
 
 @api.get("/dashboard/summary")
@@ -339,7 +408,950 @@ async def dashboard_summary(user: dict = Depends(get_current_user)):
         "incidents": incidents,
         "vehicles": vehicles,
         "supply": supply,
+        "villages": villages,
     }
+
+
+# =============================
+# Government road control + audit
+# =============================
+
+GOVERNMENT_ROLES = {"SUPER_ADMIN", "GOVERNMENT_ADMIN", "GOVERNMENT_OFFICER", "DISTRICT_OFFICER"}
+ROAD_STATUSES = {"OPEN", "AT_RISK", "RESTRICTED", "BLOCKED", "GOVERNMENT_CLOSED", "UNKNOWN"}
+
+
+class RoadStatusUpdate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    status: str
+    reason: str = Field(min_length=3, max_length=500)
+    expected_duration: Optional[str] = None
+
+
+@api.patch("/roads/{road_id}/status")
+async def update_road_status(road_id: str, body: RoadStatusUpdate, user: dict = Depends(get_current_user)):
+    if user["role"] not in GOVERNMENT_ROLES:
+        raise HTTPException(status_code=403, detail="You don't have permission for this action")
+    new_status = body.status.upper()
+    if new_status not in ROAD_STATUSES:
+        raise HTTPException(status_code=400, detail=f"Invalid status. Allowed: {sorted(ROAD_STATUSES)}")
+    road = await db.roads.find_one({"id": road_id}, {"_id": 0})
+    if not road:
+        raise HTTPException(status_code=404, detail="Road not found")
+    old_status = road["status"]
+    now_iso = datetime.now(timezone.utc).isoformat()
+    updates = {
+        "status": new_status,
+        "status_reason": body.reason,
+        "expected_duration": body.expected_duration,
+        "updated_at": now_iso,
+        "updated_by": user["email"],
+    }
+    await db.roads.update_one({"id": road_id}, {"$set": updates})
+    await db.government_actions.insert_one({
+        "id": str(uuid.uuid4()),
+        "official_id": user["id"],
+        "official_email": user["email"],
+        "official_name": user.get("name"),
+        "action_type": "ROAD_STATUS_CHANGE",
+        "target_type": "road",
+        "target_id": road_id,
+        "target_name": road.get("name"),
+        "old_state": old_status,
+        "new_state": new_status,
+        "reason": body.reason,
+        "timestamp": now_iso,
+    })
+    road.update(updates)
+    return road
+
+
+@api.get("/audit")
+async def get_audit(limit: int = 50, user: dict = Depends(get_current_user)):
+    if user["role"] not in GOVERNMENT_ROLES:
+        raise HTTPException(status_code=403, detail="You don't have permission for this action")
+    return await db.government_actions.find({}, {"_id": 0}).sort("timestamp", -1).to_list(min(limit, 200))
+
+
+# =============================
+# Vehicles
+# =============================
+
+@api.get("/vehicles")
+async def list_vehicles(user: dict = Depends(get_current_user)):
+    return await db.vehicles.find({}, {"_id": 0}).to_list(500)
+
+
+@api.get("/vehicles/{vehicle_id}")
+async def get_vehicle(vehicle_id: str, user: dict = Depends(get_current_user)):
+    v = await db.vehicles.find_one({"id": vehicle_id}, {"_id": 0})
+    if not v:
+        raise HTTPException(status_code=404, detail="Vehicle not found")
+    return v
+
+
+# =============================
+# Hazard predictions (NER prototype models — ml/hazard_models.py)
+# =============================
+
+class HazardFeatures(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    prediction_window_hours: int = 24
+
+
+@api.post("/ml/flood/predict")
+async def ml_flood_predict(body: HazardFeatures, user: dict = Depends(get_current_user)):
+    feats = body.model_dump(exclude={"prediction_window_hours"})
+    return predict_flood(feats, body.prediction_window_hours)
+
+
+@api.post("/ml/landslide/predict")
+async def ml_landslide_predict(body: HazardFeatures, user: dict = Depends(get_current_user)):
+    feats = body.model_dump(exclude={"prediction_window_hours"})
+    return predict_landslide(feats, body.prediction_window_hours)
+
+
+@api.get("/predictions/{hazard}")
+async def corridor_predictions(hazard: str, user: dict = Depends(get_current_user)):
+    if hazard not in ("flood", "landslide"):
+        raise HTTPException(status_code=404, detail="Unknown hazard. Use flood or landslide.")
+    fn = predict_flood if hazard == "flood" else predict_landslide
+    roads = await db.roads.find({}, {"_id": 0}).to_list(1000)
+    out = []
+    for r in roads:
+        feats = CORRIDOR_FEATURES.get(r["id"], {}).get(hazard, {})
+        pred = fn(feats)
+        out.append({
+            "road_id": r["id"],
+            "name": r.get("name"),
+            "district": r.get("district"),
+            "status": r.get("status"),
+            **pred,
+        })
+    out.sort(key=lambda x: x.get("flood_probability", x.get("landslide_probability", 0)), reverse=True)
+    return {
+        "hazard": hazard,
+        "model_version": MODEL_VERSION,
+        "provenance": "PROTOTYPE_DEMO",
+        "predictions": out,
+    }
+
+
+# =============================
+# Route calculation (demo routing graph over seeded corridors)
+# =============================
+import math
+
+NER_PLACES = {
+    "guwahati": (91.74, 26.15), "shillong": (91.60, 25.57), "tezpur": (92.80, 26.63),
+    "nagaon": (92.32, 26.30), "jorhat": (94.20, 26.75), "silchar": (92.78, 24.83),
+    "aizawl": (92.90, 23.73), "kohima": (94.05, 25.70), "dimapur": (93.73, 25.91),
+    "imphal": (93.94, 24.82), "ukhrul": (94.35, 24.98), "itanagar": (93.61, 27.10),
+    "pasighat": (95.33, 28.06), "agartala": (91.28, 23.83), "udaipur": (91.49, 23.53),
+    "goalpara": (90.97, 26.07), "mangaldai": (92.03, 26.44),
+}
+
+VEHICLE_SPEEDS = {"TWO_WHEELER": 45, "LIGHT": 55, "SUV": 60, "TRUCK": 40, "EMERGENCY": 75}
+STATUS_MULTIPLIER = {"OPEN": 1.0, "AT_RISK": 3.0, "RESTRICTED": 5.0, "UNKNOWN": 1.5}
+
+
+def _haversine_km(a, b):
+    lng1, lat1 = a
+    lng2, lat2 = b
+    R = 6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lng2 - lng1)
+    h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(h))
+
+
+def _line_length_km(coords):
+    return sum(_haversine_km(coords[i], coords[i + 1]) for i in range(len(coords) - 1))
+
+
+def _snap_places(point, max_km=25.0):
+    return [name for name, coord in NER_PLACES.items() if _haversine_km(point, coord) <= max_km]
+
+
+def _build_graph(roads, exclude_blocked=True):
+    adj = {}
+    for r in roads:
+        if exclude_blocked and r["status"] in ("BLOCKED", "GOVERNMENT_CLOSED"):
+            continue
+        coords = r["geometry"]["coordinates"]
+        starts = _snap_places(coords[0])
+        ends = _snap_places(coords[-1])
+        length = _line_length_km(coords)
+        for a in starts:
+            for b in ends:
+                if a == b:
+                    continue
+                cost = length * STATUS_MULTIPLIER.get(r["status"], 1.5)
+                adj.setdefault(a, []).append((b, r, cost))
+                adj.setdefault(b, []).append((a, r, cost))
+    # Local-road connectors: link each town to its 3 nearest towns so any OD pair routes (demo network)
+    names = list(NER_PLACES.keys())
+    for a in names:
+        dists = sorted((_haversine_km(NER_PLACES[a], NER_PLACES[b]), b) for b in names if b != a)
+        for d, b in dists[:3]:
+            pseudo = {
+                "id": f"local-{a}-{b}", "name": f"Local roads {a.title()}–{b.title()}",
+                "status": "LOCAL", "risk": 25, "district": "—",
+                "geometry": {"type": "LineString", "coordinates": [list(NER_PLACES[a]), list(NER_PLACES[b])]},
+            }
+            cost = d * 1.3 * 2.0
+            adj.setdefault(a, []).append((b, pseudo, cost))
+            adj.setdefault(b, []).append((a, pseudo, cost))
+    return adj
+
+
+def _dijkstra(adj, start, end):
+    dist = {start: 0.0}
+    prev = {}
+    visited = set()
+    while True:
+        cur = None
+        best = float("inf")
+        for n, d in dist.items():
+            if n not in visited and d < best:
+                cur, best = n, d
+        if cur is None:
+            return None
+        if cur == end:
+            break
+        visited.add(cur)
+        for nb, road, cost in adj.get(cur, []):
+            nd = best + cost
+            if nd < dist.get(nb, float("inf")):
+                dist[nb] = nd
+                prev[nb] = (cur, road)
+    if end not in prev and end != start:
+        return None
+    edges = []
+    cur = end
+    while cur != start:
+        p, road = prev[cur]
+        edges.append((p, cur, road))
+        cur = p
+    edges.reverse()
+    return edges
+
+
+def _assemble_route(edges, start):
+    segments = []
+    polyline = []
+    cur_node = start
+    for a, b, road in edges:
+        coords = road["geometry"]["coordinates"]
+        if _haversine_km(coords[-1], NER_PLACES[cur_node]) < _haversine_km(coords[0], NER_PLACES[cur_node]):
+            coords = list(reversed(coords))
+        if polyline and coords:
+            polyline.extend(coords[1:])
+        else:
+            polyline.extend(coords)
+        segments.append({
+            "road_id": road["id"],
+            "name": road.get("name"),
+            "status": road.get("status"),
+            "risk": road.get("risk"),
+            "district": road.get("district"),
+            "distance_km": round(_line_length_km(road["geometry"]["coordinates"]), 1),
+            "geometry": road["geometry"],
+        })
+        cur_node = b
+    return segments, polyline
+
+
+class RouteRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    origin: str
+    destination: str
+    vehicle_type: str = "TRUCK"
+
+
+@api.get("/routes/places")
+async def route_places(user: dict = Depends(get_current_user)):
+    return sorted(NER_PLACES.keys())
+
+
+@api.post("/routes/calculate")
+async def calculate_route(body: RouteRequest, user: dict = Depends(get_current_user)):
+    origin = body.origin.strip().lower()
+    destination = body.destination.strip().lower()
+    if origin not in NER_PLACES or destination not in NER_PLACES:
+        raise HTTPException(status_code=400, detail=f"Unknown place. Valid: {sorted(NER_PLACES.keys())}")
+    if origin == destination:
+        raise HTTPException(status_code=400, detail="Origin and destination must be different")
+    vehicle = body.vehicle_type.upper()
+    if vehicle not in VEHICLE_SPEEDS:
+        raise HTTPException(status_code=400, detail=f"Invalid vehicle type. Valid: {sorted(VEHICLE_SPEEDS.keys())}")
+
+    roads = await db.roads.find({}, {"_id": 0}).to_list(1000)
+
+    adj = _build_graph(roads, exclude_blocked=True)
+    edges = _dijkstra(adj, origin, destination)
+    contains_blocked = False
+    if edges is None:
+        adj_all = _build_graph(roads, exclude_blocked=False)
+        edges = _dijkstra(adj_all, origin, destination)
+        contains_blocked = True
+    if edges is None:
+        # Last-resort direct leg (off-network, demo)
+        pseudo = {
+            "id": f"direct-{origin}-{destination}", "name": f"Direct route {origin.title()}–{destination.title()} (off-network)",
+            "status": "LOCAL", "risk": 35, "district": "—",
+            "geometry": {"type": "LineString", "coordinates": [list(NER_PLACES[origin]), list(NER_PLACES[destination])]},
+        }
+        edges = [(origin, destination, pseudo)]
+
+    segments, polyline = _assemble_route(edges, origin)
+    distance_km = round(_line_length_km(polyline), 1)
+    speed = VEHICLE_SPEEDS[vehicle]
+    risky_len = sum(s["distance_km"] for s in segments if s["status"] in ("AT_RISK", "RESTRICTED", "BLOCKED", "GOVERNMENT_CLOSED"))
+    delay_factor = 1 + 0.5 * (risky_len / max(distance_km, 1))
+    eta_minutes = round(distance_km / speed * 60 * delay_factor)
+    risk_score = max((s["risk"] or 0) for s in segments)
+    blocked_roads = [s["name"] for s in segments if s["status"] in ("BLOCKED", "GOVERNMENT_CLOSED")]
+    contains_blocked = len(blocked_roads) > 0
+
+    reason = []
+    if blocked_roads:
+        reason.append(f"Corridor includes government-blocked road(s): {', '.join(blocked_roads)}")
+    else:
+        reason.append("No government closures on this route")
+    at_risk_names = [s["name"] for s in segments if s["status"] in ("AT_RISK", "RESTRICTED")]
+    if at_risk_names:
+        reason.append(f"Elevated hazard on: {', '.join(at_risk_names)}")
+    reason.append(f"Suitable for {vehicle.replace('_', ' ').title()}")
+
+    alternative = None
+    if not blocked_roads:
+        adj_naive = _build_graph(roads, exclude_blocked=False)
+        naive_edges = _dijkstra(adj_naive, origin, destination)
+        if naive_edges and [e[2]["id"] for e in naive_edges] != [e[2] for e in edges]:
+            nseg, npoly = _assemble_route(naive_edges, origin)
+            n_blocked = [s["name"] for s in nseg if s["status"] in ("BLOCKED", "GOVERNMENT_CLOSED")]
+            if n_blocked:
+                nd = round(_line_length_km(npoly), 1)
+                alternative = {
+                    "segments": nseg,
+                    "polyline": npoly,
+                    "distance_km": nd,
+                    "eta_minutes": round(nd / speed * 60),
+                    "risk_score": max((s["risk"] or 0) for s in nseg),
+                    "rejected_because": [f"Government closure: {', '.join(n_blocked)}"] + ([f"Risk score {max((s['risk'] or 0) for s in nseg)}"] if max((s["risk"] or 0) for s in nseg) >= 60 else []),
+                }
+
+    return {
+        "provenance": "DEMO",
+        "origin": {"name": origin, "lng": NER_PLACES[origin][0], "lat": NER_PLACES[origin][1]},
+        "destination": {"name": destination, "lng": NER_PLACES[destination][0], "lat": NER_PLACES[destination][1]},
+        "vehicle_type": vehicle,
+        "recommended_route": {
+            "segments": segments,
+            "polyline": polyline,
+            "distance_km": distance_km,
+            "eta_minutes": eta_minutes,
+            "risk_score": risk_score,
+            "contains_blocked": contains_blocked,
+            "blocked_roads": blocked_roads,
+        },
+        "reason": reason,
+        "alternative_route": alternative,
+    }
+
+
+# =============================
+# Deliveries, field reports, alerts, public advisories
+# =============================
+
+FIELD_ROLES = {"FIELD_OFFICER", "DRIVER", "SUPER_ADMIN", "GOVERNMENT_ADMIN", "GOVERNMENT_OFFICER", "DISTRICT_OFFICER"}
+REPORT_TYPES = {"LANDSLIDE", "FLOOD", "ROAD_DAMAGE", "BRIDGE_DAMAGE", "ACCIDENT", "BLOCKAGE", "OTHER"}
+SEVERITIES = {"INFO", "WARNING", "HIGH", "CRITICAL"}
+
+
+class FieldReportCreate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    type: str
+    description: str = Field(min_length=5, max_length=1000)
+    road_id: Optional[str] = None
+    lat: float
+    lng: float
+    severity: str
+
+
+@api.post("/field/reports", status_code=201)
+async def create_field_report(body: FieldReportCreate, user: dict = Depends(get_current_user)):
+    if user["role"] not in FIELD_ROLES:
+        raise HTTPException(status_code=403, detail="You don't have permission for this action")
+    rtype = body.type.upper()
+    severity = body.severity.upper()
+    if rtype not in REPORT_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid type. Valid: {sorted(REPORT_TYPES)}")
+    if severity not in SEVERITIES:
+        raise HTTPException(status_code=400, detail=f"Invalid severity. Valid: {sorted(SEVERITIES)}")
+
+    location = "Field location"
+    if body.road_id:
+        road = await db.roads.find_one({"id": body.road_id}, {"_id": 0})
+        if road:
+            location = road["name"]
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    report = {
+        "id": f"FR-{uuid.uuid4().hex[:6].upper()}",
+        "officer_email": user["email"],
+        "officer_name": user.get("name"),
+        "type": rtype,
+        "description": body.description,
+        "road_id": body.road_id,
+        "location": location,
+        "lat": body.lat,
+        "lng": body.lng,
+        "severity": severity,
+        "status": "SUBMITTED",
+        "created_at": now_iso,
+        "source": "FIELD",
+    }
+    await db.field_reports.insert_one({**report})
+
+    # Propagate: a field report becomes an unverified incident visible to gov + logistics immediately
+    incident = {
+        "id": f"NER-{uuid.uuid4().hex[:5].upper()}",
+        "type": rtype if rtype in ("LANDSLIDE", "FLOOD", "ROAD_DAMAGE", "BRIDGE_DAMAGE", "ACCIDENT") else "UNKNOWN",
+        "severity": severity,
+        "title": body.description[:80],
+        "location": location,
+        "lat": body.lat,
+        "lng": body.lng,
+        "source": "FIELD",
+        "confidence": 60,
+        "status": "UNVERIFIED",
+        "created_at": now_iso,
+        "source_tag": "FIELD_REPORT",
+        "field_report_id": report["id"],
+    }
+    await db.incidents.insert_one({**incident})
+    report.pop("_id", None)
+    return report
+
+
+@api.get("/field/reports")
+async def list_field_reports(user: dict = Depends(get_current_user)):
+    q = {}
+    if user["role"] in ("FIELD_OFFICER", "DRIVER"):
+        q = {"officer_email": user["email"]}
+    reports = await db.field_reports.find(q, {"_id": 0}).to_list(500)
+
+    def key(r):
+        return r.get("created_at") or _iso_mins_ago(r.get("created_minutes_ago", 0))
+    reports.sort(key=key, reverse=True)
+    for r in reports:
+        if "created_at" not in r:
+            r["created_at"] = _iso_mins_ago(r.get("created_minutes_ago", 0))
+        r.pop("created_minutes_ago", None)
+    return reports
+
+
+VERIFY_ROLES = GOVERNMENT_ROLES | {"FIELD_OFFICER"}
+
+
+@api.patch("/incidents/{incident_id}/verify")
+async def verify_incident(incident_id: str, user: dict = Depends(get_current_user)):
+    if user["role"] not in VERIFY_ROLES:
+        raise HTTPException(status_code=403, detail="You don't have permission for this action")
+    inc = await db.incidents.find_one({"id": incident_id}, {"_id": 0})
+    if not inc:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    if inc.get("status") == "VERIFIED":
+        raise HTTPException(status_code=400, detail="Incident already verified")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.incidents.update_one({"id": incident_id}, {"$set": {"status": "VERIFIED", "verified_by": user["email"], "verified_at": now_iso}})
+    if inc.get("field_report_id"):
+        await db.field_reports.update_one({"id": inc["field_report_id"]}, {"$set": {"status": "VERIFIED"}})
+    if inc.get("public_report_id"):
+        await db.public_reports.update_one({"id": inc["public_report_id"]}, {"$set": {"status": "VERIFIED"}})
+        rep = await db.public_reports.find_one({"id": inc["public_report_id"]})
+        if rep:
+            await db.users.update_one({"email": rep["reporter_email"]}, {"$inc": {"tokens": 10}})
+    await db.government_actions.insert_one({
+        "id": str(uuid.uuid4()),
+        "official_id": user["id"],
+        "official_email": user["email"],
+        "official_name": user.get("name"),
+        "action_type": "INCIDENT_VERIFIED",
+        "target_type": "incident",
+        "target_id": incident_id,
+        "target_name": inc.get("title"),
+        "old_state": inc.get("status"),
+        "new_state": "VERIFIED",
+        "reason": "Government verification",
+        "timestamp": now_iso,
+    })
+    return {"id": incident_id, "status": "VERIFIED"}
+
+
+@api.patch("/incidents/{incident_id}/reject")
+async def reject_incident(incident_id: str, user: dict = Depends(get_current_user)):
+    if user["role"] not in VERIFY_ROLES:
+        raise HTTPException(status_code=403, detail="You don't have permission for this action")
+    inc = await db.incidents.find_one({"id": incident_id}, {"_id": 0})
+    if not inc:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    if inc.get("status") in ("VERIFIED", "REJECTED"):
+        raise HTTPException(status_code=400, detail=f"Incident already {inc['status'].lower()}")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.incidents.update_one({"id": incident_id}, {"$set": {"status": "REJECTED", "rejected_by": user["email"], "rejected_at": now_iso}})
+    if inc.get("field_report_id"):
+        await db.field_reports.update_one({"id": inc["field_report_id"]}, {"$set": {"status": "REJECTED"}})
+    if inc.get("public_report_id"):
+        await db.public_reports.update_one({"id": inc["public_report_id"]}, {"$set": {"status": "REJECTED"}})
+        rep = await db.public_reports.find_one({"id": inc["public_report_id"]})
+        if rep:
+            ban_until = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+            await db.users.update_one({"email": rep["reporter_email"]}, {"$set": {"report_ban_until": ban_until}})
+    await db.government_actions.insert_one({
+        "id": str(uuid.uuid4()),
+        "official_id": user["id"], "official_email": user["email"], "official_name": user.get("name"),
+        "action_type": "INCIDENT_REJECTED", "target_type": "incident", "target_id": incident_id,
+        "target_name": inc.get("title"), "old_state": inc.get("status"), "new_state": "REJECTED",
+        "reason": "Rejected after review", "timestamp": now_iso,
+    })
+    return {"id": incident_id, "status": "REJECTED"}
+
+
+@api.get("/environment")
+async def get_environment(user: dict = Depends(get_current_user)):
+    events = await db.environment_events.find({}, {"_id": 0}).to_list(100)
+    env = _current_environment(events)
+    return {"provenance": "DEMO", **env}
+
+
+@api.get("/deliveries")
+async def list_deliveries(user: dict = Depends(get_current_user)):
+    return await db.deliveries.find({}, {"_id": 0}).to_list(500)
+
+
+@api.get("/alerts")
+async def list_alerts(user: dict = Depends(get_current_user)):
+    # Verification pipeline: unverified reports/incidents are visible only to
+    # government & field roles; logistics and public see only VERIFIED items,
+    # plus government notifications and emergency zones.
+    privileged = user["role"] in (GOVERNMENT_ROLES | {"FIELD_OFFICER", "DRIVER"})
+    inc_q = {"status": {"$ne": "RESOLVED"}} if privileged else {"status": "VERIFIED"}
+    rep_q = {} if privileged else {"status": "VERIFIED"}
+    incidents = await db.incidents.find(inc_q, {"_id": 0}).to_list(200)
+    reports = await db.field_reports.find(rep_q, {"_id": 0}).to_list(200)
+    public_reports = await db.public_reports.find(rep_q, {"_id": 0}).to_list(200)
+    notifications = await db.notifications.find({}, {"_id": 0}).sort("created_at", -1).to_list(20)
+    zones = await db.emergency_zones.find({"active": True}, {"_id": 0}).to_list(20)
+    actions = await db.government_actions.find({}, {"_id": 0}).sort("timestamp", -1).to_list(20)
+
+    feed = []
+    for i in incidents:
+        feed.append({
+            "kind": "INCIDENT", "id": i["id"], "title": i.get("title"), "severity": i.get("severity"),
+            "location": i.get("location"), "source": i.get("source"), "status": i.get("status"),
+            "created_at": i.get("created_at") or _iso_mins_ago(i.get("created_minutes_ago", 0)),
+        })
+    for r in reports:
+        feed.append({
+            "kind": "FIELD_REPORT", "id": r["id"], "title": r.get("description", "")[:80], "severity": r.get("severity"),
+            "location": r.get("location"), "source": f"FIELD · {r.get('officer_name', 'Officer')}", "status": r.get("status"),
+            "created_at": r.get("created_at") or _iso_mins_ago(r.get("created_minutes_ago", 0)),
+        })
+    for r in public_reports:
+        feed.append({
+            "kind": "PUBLIC_REPORT", "id": r["id"], "title": r.get("description", "")[:80], "severity": r.get("severity", "INFO"),
+            "location": r.get("location"), "source": f"PUBLIC · {r.get('reporter_name', 'Citizen')}", "status": r.get("status"),
+            "created_at": r.get("created_at") or _iso_mins_ago(r.get("created_minutes_ago", 0)),
+        })
+    for n in notifications:
+        feed.append({
+            "kind": "NOTIFICATION", "id": n["id"], "title": n.get("title"), "severity": n.get("severity", "INFO"),
+            "location": "Broadcast to all users", "source": "GOVERNMENT", "status": "VERIFIED",
+            "message": n.get("message"),
+            "created_at": n.get("created_at"),
+        })
+    for z in zones:
+        feed.append({
+            "kind": "EMERGENCY", "id": z["id"],
+            "title": f"Emergency declared: {z.get('name')} ({z.get('radius_km')} km radius)",
+            "severity": "CRITICAL", "location": z.get("name"), "source": "GOVERNMENT", "status": "VERIFIED",
+            "message": z.get("message"),
+            "created_at": z.get("created_at"),
+        })
+    env_events = await db.environment_events.find({}, {"_id": 0}).to_list(100)
+    env = _current_environment(env_events)
+    now_iso_env = datetime.now(timezone.utc).isoformat()
+    for r in env["rain"]:
+        if r["level"] == "HEAVY":
+            feed.append({
+                "kind": "WEATHER", "id": r["id"],
+                "title": f"Heavy rainfall: {r['name']} ({r['intensity_mm_h']} mm/h)",
+                "severity": "HIGH", "location": r["name"], "source": "AI/WEATHER", "status": "VERIFIED",
+                "message": f"Active rain cell, ~{r['radius_km']} km radius. Roads in the area may degrade.",
+                "created_at": now_iso_env,
+            })
+    for l in env["landslides"]:
+        if l["probability"] >= 0.6:
+            feed.append({
+                "kind": "HAZARD", "id": l["id"],
+                "title": f"Landslide watch: {l['name']} ({l['slide_type'].replace('_', ' ').title()}, {int(l['probability'] * 100)}%)",
+                "severity": "HIGH", "location": l["name"], "source": "AI", "status": "VERIFIED",
+                "created_at": now_iso_env,
+            })
+    for a in actions:
+        feed.append({
+            "kind": "GOVERNMENT_ACTION", "id": a["id"],
+            "title": f"{a.get('official_name', 'Official')} set {a.get('target_name', a.get('target_id'))}: {a.get('old_state')} → {a.get('new_state')}",
+            "severity": "GOV", "location": a.get("target_name"), "source": "GOVERNMENT", "status": "VERIFIED",
+            "created_at": a.get("timestamp"),
+        })
+    feed.sort(key=lambda x: x["created_at"] or "", reverse=True)
+    return feed
+
+
+@api.get("/public/advisories")
+async def public_advisories(user: dict = Depends(get_current_user)):
+    roads = await db.roads.find({"status": {"$nin": ["OPEN", "UNKNOWN"]}}, {"_id": 0}).to_list(200)
+    incidents = await db.incidents.find({"status": "VERIFIED"}, {"_id": 0}).to_list(100)
+    verified_reports = await db.field_reports.find({"status": "VERIFIED"}, {"_id": 0}).to_list(100)
+    for i in incidents:
+        if "created_at" not in i:
+            i["created_at"] = _iso_mins_ago(i.get("created_minutes_ago", 0))
+        i.pop("created_minutes_ago", None)
+    for r in verified_reports:
+        if "created_at" not in r:
+            r["created_at"] = _iso_mins_ago(r.get("created_minutes_ago", 0))
+        r.pop("created_minutes_ago", None)
+    return {
+        "provenance": "DEMO",
+        "road_advisories": [
+            {"id": r["id"], "name": r["name"], "district": r.get("district"), "status": r["status"],
+             "reason": r.get("status_reason"), "expected_duration": r.get("expected_duration"),
+             "updated_at": r.get("updated_at")}
+            for r in roads
+        ],
+        "verified_incidents": incidents,
+        "verified_field_reports": verified_reports,
+    }
+
+
+# =============================
+# Public reports, government notifications, emergency zones
+# =============================
+
+class PublicReportCreate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    type: str
+    description: str = Field(min_length=5, max_length=1000)
+    road_id: Optional[str] = None
+    lat: float
+    lng: float
+    severity: str = "INFO"
+
+
+@api.post("/public/reports", status_code=201)
+async def create_public_report(body: PublicReportCreate, user: dict = Depends(get_current_user)):
+    ban = user.get("report_ban_until")
+    if ban:
+        try:
+            ban_dt = datetime.fromisoformat(ban)
+            if ban_dt.tzinfo is None:
+                ban_dt = ban_dt.replace(tzinfo=timezone.utc)
+            if ban_dt > datetime.now(timezone.utc):
+                hours_left = round((ban_dt - datetime.now(timezone.utc)).total_seconds() / 3600, 1)
+                raise HTTPException(status_code=403, detail=f"Reporting suspended for 24h after a rejected report. Try again in ~{hours_left}h.")
+        except ValueError:
+            pass
+    rtype = body.type.upper()
+    if rtype not in REPORT_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid type. Valid: {sorted(REPORT_TYPES)}")
+    severity = body.severity.upper() if body.severity else "INFO"
+    if severity not in SEVERITIES:
+        raise HTTPException(status_code=400, detail=f"Invalid severity. Valid: {sorted(SEVERITIES)}")
+
+    location = "Reported location"
+    if body.road_id:
+        road = await db.roads.find_one({"id": body.road_id}, {"_id": 0})
+        if road:
+            location = road["name"]
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    report = {
+        "id": f"PR-{uuid.uuid4().hex[:6].upper()}",
+        "reporter_email": user["email"],
+        "reporter_name": user.get("name"),
+        "type": rtype,
+        "description": body.description,
+        "road_id": body.road_id,
+        "location": location,
+        "lat": body.lat,
+        "lng": body.lng,
+        "severity": severity,
+        "status": "PENDING",  # becomes VERIFIED only after gov/field verification
+        "created_at": now_iso,
+        "source": "PUBLIC",
+    }
+    await db.public_reports.insert_one({**report})
+    incident = {
+        "id": f"NER-{uuid.uuid4().hex[:5].upper()}",
+        "type": rtype if rtype in ("LANDSLIDE", "FLOOD", "ROAD_DAMAGE", "BRIDGE_DAMAGE", "ACCIDENT") else "UNKNOWN",
+        "severity": severity,
+        "title": body.description[:80],
+        "location": location,
+        "lat": body.lat,
+        "lng": body.lng,
+        "source": "PUBLIC",
+        "confidence": 40,
+        "status": "UNVERIFIED",
+        "created_at": now_iso,
+        "source_tag": "PUBLIC_REPORT",
+        "public_report_id": report["id"],
+    }
+    await db.incidents.insert_one({**incident})
+    report.pop("_id", None)
+    return report
+
+
+@api.get("/public/reports")
+async def list_my_public_reports(user: dict = Depends(get_current_user)):
+    q = {} if user["role"] in GOVERNMENT_ROLES else {"reporter_email": user["email"]}
+    reports = await db.public_reports.find(q, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return reports
+
+
+class NotificationCreate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    title: str = Field(min_length=3, max_length=200)
+    message: str = Field(min_length=5, max_length=1000)
+    severity: str = "INFO"
+
+
+@api.post("/notifications", status_code=201)
+async def create_notification(body: NotificationCreate, user: dict = Depends(get_current_user)):
+    if user["role"] not in GOVERNMENT_ROLES:
+        raise HTTPException(status_code=403, detail="You don't have permission for this action")
+    severity = body.severity.upper()
+    if severity not in SEVERITIES:
+        raise HTTPException(status_code=400, detail=f"Invalid severity. Valid: {sorted(SEVERITIES)}")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    notif = {
+        "id": f"NT-{uuid.uuid4().hex[:6].upper()}",
+        "title": body.title,
+        "message": body.message,
+        "severity": severity,
+        "issued_by": user["email"],
+        "issued_by_name": user.get("name"),
+        "created_at": now_iso,
+    }
+    await db.notifications.insert_one({**notif})
+    await db.government_actions.insert_one({
+        "id": str(uuid.uuid4()),
+        "official_id": user["id"], "official_email": user["email"], "official_name": user.get("name"),
+        "action_type": "NOTIFICATION_BROADCAST", "target_type": "all_users", "target_id": "all",
+        "target_name": body.title, "old_state": None, "new_state": severity,
+        "reason": body.message[:200], "timestamp": now_iso,
+    })
+    notif.pop("_id", None)
+    return notif
+
+
+@api.get("/notifications")
+async def list_notifications(user: dict = Depends(get_current_user)):
+    return await db.notifications.find({}, {"_id": 0}).sort("created_at", -1).to_list(50)
+
+
+class EmergencyZoneCreate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    name: str = Field(min_length=3, max_length=200)
+    lat: float
+    lng: float
+    radius_km: float = Field(gt=0.1, le=200)
+    message: str = Field(min_length=5, max_length=1000)
+
+
+@api.post("/emergency-zones", status_code=201)
+async def create_emergency_zone(body: EmergencyZoneCreate, user: dict = Depends(get_current_user)):
+    if user["role"] not in GOVERNMENT_ROLES:
+        raise HTTPException(status_code=403, detail="You don't have permission for this action")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    zone = {
+        "id": f"EZ-{uuid.uuid4().hex[:6].upper()}",
+        "name": body.name,
+        "lat": body.lat,
+        "lng": body.lng,
+        "radius_km": body.radius_km,
+        "message": body.message,
+        "active": True,
+        "declared_by": user["email"],
+        "declared_by_name": user.get("name"),
+        "created_at": now_iso,
+    }
+    await db.emergency_zones.insert_one({**zone})
+    await db.government_actions.insert_one({
+        "id": str(uuid.uuid4()),
+        "official_id": user["id"], "official_email": user["email"], "official_name": user.get("name"),
+        "action_type": "EMERGENCY_DECLARED", "target_type": "zone", "target_id": zone["id"],
+        "target_name": body.name, "old_state": None, "new_state": f"{body.radius_km} km radius",
+        "reason": body.message[:200], "timestamp": now_iso,
+    })
+    zone.pop("_id", None)
+    return zone
+
+
+@api.get("/emergency-zones")
+async def list_emergency_zones(user: dict = Depends(get_current_user)):
+    return await db.emergency_zones.find({"active": True}, {"_id": 0}).sort("created_at", -1).to_list(50)
+
+
+# =============================
+# Direct incident creation, vehicle registration, accidents, emergency end
+# =============================
+
+INCIDENT_CREATOR_ROLES = GOVERNMENT_ROLES | {"FIELD_OFFICER"}
+VEHICLE_CREATOR_ROLES = GOVERNMENT_ROLES | {"FIELD_OFFICER", "LOGISTICS_OPERATOR"}
+
+
+class IncidentCreate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    type: str
+    title: str = Field(min_length=5, max_length=200)
+    road_id: Optional[str] = None
+    location: Optional[str] = None
+    lat: float
+    lng: float
+    severity: str
+
+
+@api.post("/incidents", status_code=201)
+async def create_incident(body: IncidentCreate, user: dict = Depends(get_current_user)):
+    """Government officials and field officers create incidents directly — broadcast to all roles immediately."""
+    if user["role"] not in INCIDENT_CREATOR_ROLES:
+        raise HTTPException(status_code=403, detail="You don't have permission for this action")
+    itype = body.type.upper()
+    severity = body.severity.upper()
+    valid_types = REPORT_TYPES | {"TRAFFIC", "WEATHER", "UNKNOWN"}
+    if itype not in valid_types:
+        raise HTTPException(status_code=400, detail=f"Invalid type. Valid: {sorted(valid_types)}")
+    if severity not in SEVERITIES:
+        raise HTTPException(status_code=400, detail=f"Invalid severity. Valid: {sorted(SEVERITIES)}")
+
+    location = body.location
+    if body.road_id:
+        road = await db.roads.find_one({"id": body.road_id}, {"_id": 0})
+        if road:
+            location = road["name"]
+    if not location:
+        location = "Specified location"
+
+    is_gov = user["role"] in GOVERNMENT_ROLES
+    now_iso = datetime.now(timezone.utc).isoformat()
+    incident = {
+        "id": f"NER-{uuid.uuid4().hex[:5].upper()}",
+        "type": itype,
+        "severity": severity,
+        "title": body.title,
+        "location": location,
+        "lat": body.lat,
+        "lng": body.lng,
+        "source": "GOVERNMENT" if is_gov else "FIELD",
+        "confidence": 100 if is_gov else 90,
+        "status": "VERIFIED",  # trusted roles broadcast immediately
+        "created_at": now_iso,
+        "verified_by": user["email"],
+        "verified_at": now_iso,
+    }
+    await db.incidents.insert_one({**incident})
+    await db.government_actions.insert_one({
+        "id": str(uuid.uuid4()),
+        "official_id": user["id"], "official_email": user["email"], "official_name": user.get("name"),
+        "action_type": "INCIDENT_CREATED", "target_type": "incident", "target_id": incident["id"],
+        "target_name": body.title, "old_state": None, "new_state": "VERIFIED",
+        "reason": f"Created by {'government official' if is_gov else 'field officer'}", "timestamp": now_iso,
+    })
+    incident.pop("_id", None)
+    return incident
+
+
+@api.get("/accidents")
+async def list_accidents(user: dict = Depends(get_current_user)):
+    """Verified accidents only — shown to public and logistics after field/gov verification."""
+    incidents = await db.incidents.find(
+        {"type": "ACCIDENT", "status": {"$in": ["VERIFIED", "PROVISIONALLY_BLOCKED"]}}, {"_id": 0}
+    ).to_list(100)
+    for i in incidents:
+        if "created_at" not in i:
+            i["created_at"] = _iso_mins_ago(i.get("created_minutes_ago", 0))
+        i.pop("created_minutes_ago", None)
+    incidents.sort(key=lambda x: x["created_at"], reverse=True)
+    return incidents
+
+
+@api.patch("/emergency-zones/{zone_id}/end")
+async def end_emergency_zone(zone_id: str, user: dict = Depends(get_current_user)):
+    if user["role"] not in GOVERNMENT_ROLES:
+        raise HTTPException(status_code=403, detail="You don't have permission for this action")
+    zone = await db.emergency_zones.find_one({"id": zone_id}, {"_id": 0})
+    if not zone:
+        raise HTTPException(status_code=404, detail="Emergency zone not found")
+    if not zone.get("active"):
+        raise HTTPException(status_code=400, detail="Emergency already ended")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.emergency_zones.update_one({"id": zone_id}, {"$set": {"active": False, "ended_by": user["email"], "ended_at": now_iso}})
+    await db.government_actions.insert_one({
+        "id": str(uuid.uuid4()),
+        "official_id": user["id"], "official_email": user["email"], "official_name": user.get("name"),
+        "action_type": "EMERGENCY_ENDED", "target_type": "zone", "target_id": zone_id,
+        "target_name": zone.get("name"), "old_state": "ACTIVE", "new_state": "ENDED",
+        "reason": "Emergency lifted", "timestamp": now_iso,
+    })
+    return {"id": zone_id, "active": False}
+
+
+class VehicleCreate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    number: str = Field(min_length=3, max_length=20)
+    type: str
+    lat: float
+    lng: float
+    destination: Optional[str] = None
+    commodity: Optional[str] = None
+
+
+@api.post("/vehicles", status_code=201)
+async def create_vehicle(body: VehicleCreate, user: dict = Depends(get_current_user)):
+    """Field officers (and government/logistics) can register vehicles on the network."""
+    if user["role"] not in VEHICLE_CREATOR_ROLES:
+        raise HTTPException(status_code=403, detail="You don't have permission for this action")
+    vtype = body.type.upper()
+    if vtype not in VEHICLE_SPEEDS:
+        raise HTTPException(status_code=400, detail=f"Invalid type. Valid: {sorted(VEHICLE_SPEEDS.keys())}")
+    number = body.number.strip().upper()
+    if await db.vehicles.find_one({"number": number}):
+        raise HTTPException(status_code=400, detail=f"Vehicle {number} already registered")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    vehicle = {
+        "id": f"veh-{uuid.uuid4().hex[:6]}",
+        "number": number,
+        "type": vtype,
+        "lat": body.lat,
+        "lng": body.lng,
+        "heading": 0,
+        "speed": 0,
+        "status": "IDLE",
+        "destination": body.destination or "—",
+        "eta_minutes": None,
+        "risk": 10,
+        "commodity": body.commodity.upper() if body.commodity else None,
+        "added_by": user["email"],
+        "created_at": now_iso,
+        "source": "FIELD" if user["role"] == "FIELD_OFFICER" else "GOVERNMENT",
+    }
+    await db.vehicles.insert_one({**vehicle})
+    vehicle.pop("_id", None)
+    return vehicle
 
 
 @app.on_event("shutdown")

@@ -1,0 +1,27 @@
+{
+  "summary": "Iteration 6 (routing bugfix + public-report tokens/24h-ban) tested. Backend: 8/8 pytest tests pass — routing returns 200 for guwahati->silchar, imphal->agartala, pasighat->aizawl (all previously 404) with LOCAL 'local-*' segments; unknown place returns 400 listing valid places; guwahati->shillong recommended route has no blocked segments (blocked corridor pushed to rejected alternative); public report -> gov verify awards +10 tokens; field officer can verify public reports; public report -> gov reject sets report_ban_until ~24h and further POST /api/public/reports returns 403 'Reporting suspended for 24h...'. Frontend: /routes as logistics operator computed guwahati->silchar (ETA 5h 16m, 210.4 km, risk 25 LOW), 2 UNVERIFIED LOCAL segments listed, map-endpoint-A and map-endpoint-B pins rendered on map, alternative-rejected card shows NH-6 government closure rationale. /public as public user shows public-token-balance chip ('0 tokens') and no ban banner (clean state). Public demo user reset to tokens=0, no ban at end of testing as required.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iter6.py",
+    "/app/test_reports/pytest/iter6_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py line 715: `contains_blocked = contains_blocked and len(blocked_roads) > 0 or len(blocked_roads) > 0` — operator precedence works but the expression is redundant; simplify to `contains_blocked = len(blocked_roads) > 0`.",
+    "_build_graph adds N*3 synthetic local connectors on every /routes/calculate call (recomputed per request). For a demo it is fine, but cache the adjacency graph or memoize by road-status hash to reduce per-request work.",
+    "verify_incident/reject_incident: token award and ban writes are not wrapped in a transaction with the incident-status update. If the second write fails, the incident is verified/rejected but tokens/ban never applied. Acceptable for demo, but note for production.",
+    "reject_incident sets report_ban_until as string ISO; create_public_report parses it with datetime.fromisoformat and swallows ValueError silently — a malformed value would let a banned user bypass the ban. Consider storing as a proper Mongo datetime.",
+    "server.py is now 1371 lines — split into routers (routes.py, incidents.py, public.py) for maintainability.",
+    "No GET /api/incidents endpoint exists; incidents are only reachable via /api/dashboard/summary. Frontend/testing convenience suggests adding a dedicated GET /api/incidents with optional status filter."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter6.py"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "gov.admin@neris.demo / Demo@2026; field@neris.demo / Demo@2026; logistics@neris.demo / Demo@2026; public@neris.demo / Demo@2026",
+  "seed_data_creation": "Public reports created during tests are prefixed with 'TEST_iter6' in their description. Public user reset (tokens=0, report_ban_until unset) via pymongo at end of test run as instructed.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iteration 6 (routing local-connector bugfix + public token/ban) is green on both backend and frontend. Note: no GET /api/incidents endpoint — must use /api/dashboard/summary.incidents to list incidents. Login response returns key 'token' (not 'access_token'). Auth uses Bearer JWT in Authorization header. Emergency banner shows expected leftover 'TEST_iter5 zone' and 'Sonapur Landslide Zone' — not a bug."
+}

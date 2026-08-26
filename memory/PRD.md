@@ -9,6 +9,16 @@ North Eastern Region Intelligence System (SIH26002). This iteration: white/insti
 - Field Officer (mobile reporting)
 - Public User (read-only)
 
+## Iteration 5 (DONE — 2026-02) — Roles, verification pipeline, emergencies, environment overlays
+- Pages: LogisticsWorkspace, FieldReporting (offline queue), PublicAdvisories, GisMap, Incidents, Supply, Predictions (table + map), Alerts, Audit — all live, no stubs
+- Public reports → PENDING → gov/field verify or reject → verified items broadcast to all; alerts feed is role-aware
+- Gov: Declare/End emergency zones (radius circles on all maps, banner, audit), broadcast notifications
+- Environment overlays: live rain cells (dynamic intensity/radius) + landslide watch triangles on maps; WEATHER/HAZARD kinds in alerts
+- Field officers can register vehicles; gov+field create incidents directly (auto-broadcast); verified accidents section on public + logistics pages
+
+## Iteration 6 (DONE — 2026-02) — Routing bugfix + report reputation
+- BUGFIX: routes no longer dead-end — graph densified with local-road connectors (3 nearest towns, status LOCAL, gray, 'unverified' label) + direct-leg fallback; route line Google-blue with white casing, A/B teardrop pins
+- Public report reputation: +10 tokens on verified report; 24h report ban on rejected (fake) report; tokens + ban state in /api/auth/me and public page UI
 ## Iteration 1 (DONE — 2026-02)
 - Institutional white theme (deep teal-navy accent #1B4B66) per frontend spec §1-3
 - Landing page (`/`) with hero, capabilities, role cards, region map SVG
@@ -25,12 +35,11 @@ North Eastern Region Intelligence System (SIH26002). This iteration: white/insti
 - Fixed: MapLibre v6 named imports; maplibre CSS position:relative override fixed via inline style
 - Fixed: NavRail now renders on PostLoginStub pages (role-scoped nav visible on /logistics etc.) — verified via retest
 
-## Backlog (P0/P1)
-- P0: Full Command Center with MapLibre map + live incidents + KPIs
-- P0: Vehicles page + fleet routing
-- P1: Predictions (Flood/Landslide/Accessibility)
-- P1: Isolation map + Supply intelligence
-- P2: Simulation, Alerts, Audit, Admin
+## Backlog (P1/P2)
+- P1: WebSocket push replacing polling; GET /api/incidents dedicated endpoint; split server.py into routers
+- P1: Real basemap style + corridor-accurate geometries (currently demo graph with synthetic local-road connectors)
+- P2: Photo evidence upload (object storage), driver app, simulation sandbox, admin user management
+- P2: Harden token/ban writes into transactions; store report_ban_until as Mongo datetime
 
 ## Auth
 JWT (localStorage), 8h expiry, bcrypt. See /app/memory/test_credentials.md.

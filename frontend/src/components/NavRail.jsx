@@ -6,6 +6,7 @@ const NAV_GROUPS = {
   gov: [
     { to: "/command-center", icon: LayoutDashboard, label: "Command" },
     { to: "/map", icon: MapIcon, label: "GIS Map" },
+    { to: "/routes", icon: RouteIcon, label: "Routes" },
     { to: "/vehicles", icon: Truck, label: "Fleet" },
     { to: "/incidents", icon: TriangleAlert, label: "Incidents" },
     { to: "/supply", icon: Boxes, label: "Supply" },
@@ -19,8 +20,17 @@ const NAV_GROUPS = {
     { to: "/routes", icon: RouteIcon, label: "Routes" },
     { to: "/alerts", icon: Bell, label: "Alerts" },
   ],
-  field: [{ to: "/field", icon: Radio, label: "Report" }],
-  public: [{ to: "/public", icon: UserIcon, label: "Advisories" }],
+  field: [
+    { to: "/field", icon: Radio, label: "Report" },
+    { to: "/vehicles", icon: Truck, label: "Fleet" },
+    { to: "/routes", icon: RouteIcon, label: "Road Status" },
+    { to: "/alerts", icon: Bell, label: "Alerts" },
+  ],
+  public: [
+    { to: "/public", icon: UserIcon, label: "Advisories" },
+    { to: "/routes", icon: RouteIcon, label: "Road Status" },
+    { to: "/alerts", icon: Bell, label: "Alerts" },
+  ],
 };
 
 function groupFor(role) {

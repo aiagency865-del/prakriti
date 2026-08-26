@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import api from "@/lib/api";
+import { toast } from "sonner";
+import { formatApiErrorDetail } from "@/lib/api";
 import NavRail from "@/components/NavRail";
 import NerMap, { STATUS_COLORS } from "@/components/NerMap";
+import RoadControlDrawer from "@/components/RoadControlDrawer";
+import EmergencyBanner from "@/components/EmergencyBanner";
+import EmergencyZoneModal from "@/components/EmergencyZoneModal";
+import { useAuth } from "@/context/AuthContext";
 import {
   Mountain, CloudRain, Wrench, Car, CloudLightning, HelpCircle,
-  Pill, Wheat, Droplets, Fuel, Truck, ShieldAlert, CircleAlert, Layers,
+  Pill, Wheat, Droplets, Fuel, Truck, ShieldAlert, CircleAlert, Layers, AlertOctagon,
 } from "lucide-react";
 
 const SEVERITY_COLORS = { INFO: "#4C7EA8", WARNING: "#C77C00", HIGH: "#D9622B", CRITICAL: "#C4281C" };
@@ -32,23 +38,47 @@ function timeAgo(iso, now) {
   return `${Math.floor(diff / 3600)}h ago`;
 }
 
+const GOV_ROLES = ["SUPER_ADMIN", "GOVERNMENT_ADMIN", "GOVERNMENT_OFFICER", "DISTRICT_OFFICER"];
+
 export default function CommandCenter() {
+  const { user } = useAuth();
+  const isGov = user && GOV_ROLES.includes(user.role);
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [lastFetch, setLastFetch] = useState(null);
   const [now, setNow] = useState(Date.now());
   const [layers, setLayers] = useState({ roads: true, vehicles: true, incidents: true });
+  const [selectedRoad, setSelectedRoad] = useState(null);
+  const [zones, setZones] = useState([]);
+  const [environment, setEnvironment] = useState(null);
+  const [emergencyOpen, setEmergencyOpen] = useState(false);
 
   const fetchAll = useCallback(async () => {
     try {
-      const { data: d } = await api.get("/dashboard/summary");
+      const [{ data: d }, { data: z }, { data: env }] = await Promise.all([
+        api.get("/dashboard/summary"),
+        api.get("/emergency-zones"),
+        api.get("/environment"),
+      ]);
       setData(d);
+      setZones(z);
+      setEnvironment(env);
       setError("");
       setLastFetch(Date.now());
     } catch (e) {
       setError("Live updates paused. Data shown may be outdated.");
     }
   }, []);
+
+  const incidentAction = useCallback(async (id, action) => {
+    try {
+      await api.patch(`/incidents/${id}/${action}`);
+      toast.success(action === "verify" ? "Incident verified — broadcast to all roles" : "Incident rejected");
+      fetchAll();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail) || "Action failed");
+    }
+  }, [fetchAll]);
 
   useEffect(() => {
     fetchAll();
@@ -74,6 +104,17 @@ export default function CommandCenter() {
               DEMO DATA
             </span>
           </div>
+          <div className="flex items-center gap-3">
+            {isGov && (
+              <button
+                onClick={() => setEmergencyOpen(true)}
+                className="h-8 px-3 rounded-md border border-[#8A1512] text-[#8A1512] hover:bg-red-50 text-[12px] font-medium flex items-center gap-1.5 transition-colors"
+                data-testid="declare-emergency-button"
+              >
+                <AlertOctagon size={13} /> Declare Emergency
+              </button>
+            )}
+          </div>
           <div className="flex items-center gap-2 text-[12px]" data-testid="cc-live-indicator">
             {connected ? (
               <>
@@ -93,6 +134,8 @@ export default function CommandCenter() {
             )}
           </div>
         </header>
+
+        <EmergencyBanner zones={zones} onChanged={fetchAll} />
 
         {error && (
           <div className="flex-shrink-0 bg-amber-50 border-b border-amber-200 px-5 py-2 text-[12px] text-amber-800 flex items-center justify-between" data-testid="cc-offline-banner">
@@ -127,6 +170,9 @@ export default function CommandCenter() {
                 vehicles={data.vehicles}
                 incidents={data.incidents.filter((i) => i.status !== "RESOLVED")}
                 layers={layers}
+                onRoadClick={(props) => setSelectedRoad(props)}
+                zones={zones}
+                environment={environment}
               />
             ) : (
               <div className="absolute inset-0 bg-[var(--surface-sunken)] animate-pulse" data-testid="cc-map-skeleton" />
@@ -167,6 +213,14 @@ export default function CommandCenter() {
                     {label}
                   </div>
                 ))}
+                <div className="flex items-center gap-1.5 text-[10.5px] text-neutral-600">
+                  <span className="w-4 h-[3px] rounded-full" style={{ background: "#2563EB" }} />
+                  Rain cell
+                </div>
+                <div className="flex items-center gap-1.5 text-[10.5px] text-neutral-600">
+                  <span style={{ width: 0, height: 0, borderLeft: "5px solid transparent", borderRight: "5px solid transparent", borderBottom: "9px solid #D9622B" }} />
+                  Landslide watch
+                </div>
               </div>
             </div>
           </div>
@@ -196,7 +250,7 @@ export default function CommandCenter() {
               {data && data.incidents.filter((i) => i.status !== "RESOLVED").map((inc) => {
                 const Icon = TYPE_ICONS[inc.type] || HelpCircle;
                 return (
-                  <button
+                  <div
                     key={inc.id}
                     data-testid={`incident-row-${inc.id}`}
                     className="w-full text-left px-4 py-3 border-b hairline hover:bg-[var(--surface-base)] transition-colors"
@@ -225,9 +279,30 @@ export default function CommandCenter() {
                           <span className="text-[10px] text-neutral-500 font-mono">{inc.source}</span>
                           <span className="text-[10px] text-neutral-500 tabular-nums ml-auto">{inc.confidence}% conf.</span>
                         </div>
+                        {isGov && inc.status === "UNVERIFIED" && (
+                          <div className="flex gap-2 mt-2" data-testid={`cc-review-${inc.id}`}>
+                            <button
+                              onClick={() => incidentAction(inc.id, "verify")}
+                              className="h-7 px-2.5 rounded-md text-[11px] font-medium bg-green-700 hover:bg-green-800 text-white transition-colors"
+                              data-testid={`cc-verify-${inc.id}`}
+                            >
+                              Verify & broadcast
+                            </button>
+                            <button
+                              onClick={() => incidentAction(inc.id, "reject")}
+                              className="h-7 px-2.5 rounded-md border hairline text-[11px] font-medium text-neutral-600 hover:bg-red-50 hover:text-red-700 transition-colors"
+                              data-testid={`cc-reject-${inc.id}`}
+                            >
+                              Reject
+                            </button>
+                          </div>
+                        )}
+                        {inc.status === "VERIFIED" && (
+                          <div className="mt-1.5 text-[10px] font-semibold text-green-700 uppercase tracking-wider">Verified · broadcast to all</div>
+                        )}
                       </div>
                     </div>
-                  </button>
+                  </div>
                 );
               })}
             </div>
@@ -280,6 +355,26 @@ export default function CommandCenter() {
           </div>
         </div>
       </div>
+
+      {emergencyOpen && (
+        <EmergencyZoneModal
+          onClose={() => setEmergencyOpen(false)}
+          onCreated={() => fetchAll()}
+        />
+      )}
+
+      {selectedRoad && (
+        <RoadControlDrawer
+          road={
+            data?.roads?.features?.find((f) => f.properties.id === selectedRoad.id)?.properties || selectedRoad
+          }
+          onClose={() => setSelectedRoad(null)}
+          onChanged={(updated) => {
+            setSelectedRoad(updated);
+            fetchAll();
+          }}
+        />
+      )}
     </div>
   );
 }
