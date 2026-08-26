@@ -1,0 +1,27 @@
+{
+  "summary": "First iteration testing for NERIS landing + login + auth. All backend endpoints and all frontend flows passed successfully.",
+  "tested_scope": ["frontend", "backend", "auth", "integration"],
+  "passed": [
+    "GET /api/ returns 200 {service:NERIS,status:ok}",
+    "GET /api/auth/demo-accounts returns 5 demo accounts without passwords",
+    "POST /api/auth/login gov.admin@neris.demo returns token + user with role GOVERNMENT_ADMIN",
+    "POST /api/auth/login logistics@neris.demo returns token + user with role LOGISTICS_OPERATOR",
+    "POST /api/auth/login aiagency865@gmail.com returns token + user with role SUPER_ADMIN",
+    "POST /api/auth/login wrong password returns 401 'Incorrect email or password'",
+    "GET /api/auth/me without Authorization returns 401 Not authenticated",
+    "GET /api/auth/me with Bearer token returns user object without password_hash",
+    "Landing page loads with signin link, command-center CTA, logistics CTA, government + logistics role cards, capabilities section",
+    "landing-cta-logistics routes to /login?role=logistics and preselects Logistics tab (aria-selected=true)",
+    "Show/Hide password toggle switches input type between password and text",
+    "'Fill demo credentials' populates email + password for active tab (verified gov.admin@neris.demo / Demo@2026)",
+    "Invalid credentials show inline login-error 'Incorrect email or password' without navigation",
+    "Valid Government login redirects to /command-center; auth-user-name 'Aditi Baruah', auth-user-role 'Government Admin'",
+    "Valid Logistics login redirects to /logistics workspace showing organization + department",
+    "Sign out clears localStorage.neris_token and redirects to /login"
+  ],
+  "failed": [],
+  "action_items": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "retest_needed": false,
+  "full_testing_deferred": true
+}
