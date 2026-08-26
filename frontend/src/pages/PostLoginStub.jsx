@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { LogOut, Building2, ShieldCheck, Truck, Radio, User } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
+import NavRail from "@/components/NavRail";
 
 const roleMeta = {
   GOVERNMENT_ADMIN: { label: "Government Admin", icon: ShieldCheck, tint: "var(--accent-primary)" },
@@ -20,7 +21,9 @@ export default function PostLoginStub({ pageTitle }) {
   const Icon = meta.icon;
 
   return (
-    <div className="min-h-screen bg-[var(--surface-base)]">
+    <div className="min-h-screen bg-[var(--surface-base)] flex">
+      <NavRail />
+      <div className="flex-1 min-w-0">
       <header className="border-b hairline bg-white">
         <div className="max-w-7xl mx-auto px-6 h-14 flex items-center justify-between">
           <Link to="/" className="flex items-center gap-2">
@@ -84,6 +87,7 @@ export default function PostLoginStub({ pageTitle }) {
           ))}
         </div>
       </main>
+      </div>
     </div>
   );
 }

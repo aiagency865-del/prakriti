@@ -220,6 +220,126 @@ async def on_startup():
     for acc in DEMO_ACCOUNTS:
         await _upsert_user(acc)
     logger.info("NERIS: users seeded (owner + %d demo accounts)", len(DEMO_ACCOUNTS))
+    await seed_dashboard()
+    logger.info("NERIS: dashboard demo dataset ready")
+
+
+# =============================
+# Command Center demo dataset (all rows tagged source=DEMO)
+# =============================
+
+def _iso_mins_ago(m: int) -> str:
+    return (datetime.now(timezone.utc) - timedelta(minutes=m)).isoformat()
+
+
+DEMO_ROADS = [
+    {"id": "rd-nh27", "name": "NH-27 Guwahati–Nagaon", "road_class": "highway", "district": "Kamrup Metro", "status": "AT_RISK", "risk": 62, "geometry": {"type": "LineString", "coordinates": [[91.57, 26.12], [91.75, 26.18], [92.05, 26.23], [92.32, 26.30]]}},
+    {"id": "rd-nh6", "name": "NH-6 Guwahati–Shillong", "road_class": "highway", "district": "Ri-Bhoi", "status": "BLOCKED", "risk": 91, "geometry": {"type": "LineString", "coordinates": [[91.74, 26.14], [91.65, 25.85], [91.60, 25.57]]}},
+    {"id": "rd-nh15", "name": "NH-15 Mangaldai–Tezpur", "road_class": "highway", "district": "Sonitpur", "status": "RESTRICTED", "risk": 55, "geometry": {"type": "LineString", "coordinates": [[92.03, 26.44], [92.35, 26.50], [92.80, 26.63]]}},
+    {"id": "rd-nh17", "name": "NH-17 Guwahati–Goalpara", "road_class": "highway", "district": "Goalpara", "status": "OPEN", "risk": 18, "geometry": {"type": "LineString", "coordinates": [[91.74, 26.15], [91.35, 26.10], [90.97, 26.07]]}},
+    {"id": "rd-nh715", "name": "NH-715 Tezpur–Jorhat", "road_class": "highway", "district": "Jorhat", "status": "OPEN", "risk": 22, "geometry": {"type": "LineString", "coordinates": [[92.80, 26.63], [93.30, 26.72], [94.20, 26.75]]}},
+    {"id": "rd-sh9", "name": "SH-9 Silchar–Aizawl", "road_class": "secondary", "district": "Cachar", "status": "AT_RISK", "risk": 47, "geometry": {"type": "LineString", "coordinates": [[92.78, 24.83], [92.75, 24.20], [92.90, 23.73]]}},
+    {"id": "rd-nh29", "name": "NH-29 Dimapur–Kohima", "road_class": "highway", "district": "Kohima", "status": "GOVERNMENT_CLOSED", "risk": 88, "geometry": {"type": "LineString", "coordinates": [[93.73, 25.91], [94.05, 25.70]]}},
+    {"id": "rd-nh13", "name": "NH-13 Itanagar–Pasighat", "road_class": "highway", "district": "East Siang", "status": "OPEN", "risk": 15, "geometry": {"type": "LineString", "coordinates": [[93.61, 27.10], [94.30, 27.80], [95.33, 28.06]]}},
+    {"id": "rd-nh502", "name": "NH-502 Imphal–Ukhrul", "road_class": "secondary", "district": "Ukhrul", "status": "UNKNOWN", "risk": 40, "geometry": {"type": "LineString", "coordinates": [[93.94, 24.82], [94.35, 24.98]]}},
+    {"id": "rd-nh108", "name": "NH-108 Agartala–Udaipur", "road_class": "highway", "district": "Gomati", "status": "OPEN", "risk": 12, "geometry": {"type": "LineString", "coordinates": [[91.28, 23.83], [91.49, 23.53]]}},
+]
+
+DEMO_INCIDENTS = [
+    {"id": "NER-20481", "type": "LANDSLIDE", "severity": "CRITICAL", "title": "Landslide Risk", "location": "NH-6, near Sonapur", "lat": 26.07, "lng": 91.63, "source": "AI+GPS", "confidence": 91, "status": "PROVISIONALLY_BLOCKED", "created_minutes_ago": 12},
+    {"id": "NER-20479", "type": "FLOOD", "severity": "HIGH", "title": "Flood Probability Rising", "location": "NH-15, Tezpur approach", "lat": 26.55, "lng": 92.55, "source": "AI", "confidence": 78, "status": "UNVERIFIED", "created_minutes_ago": 24},
+    {"id": "NER-20477", "type": "TRAFFIC", "severity": "HIGH", "title": "Fleet Anomaly Detected", "location": "NH-27, Baihata stretch — 8 vehicles slowed", "lat": 26.22, "lng": 91.72, "source": "GPS", "confidence": 84, "status": "UNVERIFIED", "created_minutes_ago": 31},
+    {"id": "NER-20475", "type": "ROAD_DAMAGE", "severity": "WARNING", "title": "Road Damage Reported", "location": "NH-29, Kohima bypass", "lat": 25.78, "lng": 93.90, "source": "FIELD", "confidence": 72, "status": "VERIFIED", "created_minutes_ago": 47},
+    {"id": "NER-20467", "type": "FLOOD", "severity": "HIGH", "title": "River Level Above Threshold", "location": "SH-9, Barak valley", "lat": 24.55, "lng": 92.77, "source": "AI", "confidence": 81, "status": "UNVERIFIED", "created_minutes_ago": 66},
+    {"id": "NER-20473", "type": "WEATHER", "severity": "WARNING", "title": "Heavy Rainfall Warning", "location": "Meghalaya hills, NH-6 corridor", "lat": 25.70, "lng": 91.62, "source": "AI", "confidence": 69, "status": "UNVERIFIED", "created_minutes_ago": 58},
+    {"id": "NER-20471", "type": "BRIDGE_DAMAGE", "severity": "INFO", "title": "Bridge Inspection Scheduled", "location": "NH-17, Bridge B-17", "lat": 26.10, "lng": 91.35, "source": "GOVERNMENT", "confidence": 100, "status": "VERIFIED", "created_minutes_ago": 132},
+    {"id": "NER-20469", "type": "ACCIDENT", "severity": "INFO", "title": "Minor Accident Cleared", "location": "NH-715, near Jorhat", "lat": 26.72, "lng": 93.30, "source": "PUBLIC", "confidence": 55, "status": "RESOLVED", "created_minutes_ago": 188},
+]
+
+DEMO_VEHICLES = [
+    {"id": "veh-204", "number": "TRK-204", "type": "TRUCK", "lat": 26.19, "lng": 91.80, "heading": 72, "speed": 34, "status": "IN_TRANSIT", "destination": "Nagaon DC", "eta_minutes": 192, "risk": 32, "commodity": "MEDICINE"},
+    {"id": "veh-118", "number": "TRK-118", "type": "TRUCK", "lat": 26.46, "lng": 92.30, "heading": 80, "speed": 41, "status": "IN_TRANSIT", "destination": "Tezpur Depot", "eta_minutes": 78, "risk": 55, "commodity": "FOOD"},
+    {"id": "veh-332", "number": "LTV-332", "type": "LIGHT", "lat": 26.11, "lng": 91.42, "heading": 262, "speed": 48, "status": "IN_TRANSIT", "destination": "Goalpara", "eta_minutes": 95, "risk": 18, "commodity": "WATER"},
+    {"id": "veh-090", "number": "EMG-090", "type": "EMERGENCY", "lat": 26.15, "lng": 91.70, "heading": 190, "speed": 62, "status": "IN_TRANSIT", "destination": "GMCH Guwahati", "eta_minutes": 14, "risk": 12, "commodity": "EMERGENCY_EQUIPMENT"},
+    {"id": "veh-451", "number": "TRK-451", "type": "TRUCK", "lat": 26.22, "lng": 91.71, "heading": 75, "speed": 8, "status": "DELAYED", "destination": "Baihata Chariali", "eta_minutes": 240, "risk": 71, "commodity": "FUEL"},
+    {"id": "veh-517", "number": "SUV-517", "type": "SUV", "lat": 24.40, "lng": 92.76, "heading": 350, "speed": 29, "status": "IN_TRANSIT", "destination": "Silchar", "eta_minutes": 66, "risk": 47, "commodity": "MEDICINE"},
+    {"id": "veh-620", "number": "TRK-620", "type": "TRUCK", "lat": 25.85, "lng": 93.85, "heading": 10, "speed": 0, "status": "DELAYED", "destination": "Kohima", "eta_minutes": 310, "risk": 88, "commodity": "CONSTRUCTION"},
+    {"id": "veh-733", "number": "LTV-733", "type": "LIGHT", "lat": 26.68, "lng": 93.10, "heading": 95, "speed": 44, "status": "IN_TRANSIT", "destination": "Jorhat", "eta_minutes": 120, "risk": 22, "commodity": "FOOD"},
+    {"id": "veh-842", "number": "2W-842", "type": "TWO_WHEELER", "lat": 27.30, "lng": 94.60, "heading": 40, "speed": 38, "status": "IN_TRANSIT", "destination": "Pasighat", "eta_minutes": 150, "risk": 15, "commodity": "AGRICULTURAL"},
+    {"id": "veh-905", "number": "TRK-905", "type": "TRUCK", "lat": 23.70, "lng": 91.40, "heading": 185, "speed": 52, "status": "IN_TRANSIT", "destination": "Udaipur", "eta_minutes": 42, "risk": 12, "commodity": "FOOD"},
+    {"id": "veh-011", "number": "SUV-011", "type": "SUV", "lat": 24.90, "lng": 94.10, "heading": 30, "speed": 0, "status": "IDLE", "destination": "—", "eta_minutes": None, "risk": 40, "commodity": None},
+    {"id": "veh-156", "number": "EMG-156", "type": "EMERGENCY", "lat": 26.60, "lng": 92.75, "heading": 270, "speed": 55, "status": "IN_TRANSIT", "destination": "Tezpur MC", "eta_minutes": 9, "risk": 55, "commodity": "MEDICINE"},
+]
+
+DEMO_VILLAGES = [
+    {"id": "vil-majuli", "name": "Majuli Riverine Cluster", "district": "Majuli", "population": 12400, "isolation_risk": "CRITICAL"},
+    {"id": "vil-tuting", "name": "Tuting", "district": "Upper Siang", "population": 3200, "isolation_risk": "CRITICAL"},
+    {"id": "vil-cherrapunji", "name": "Sohra Outskirts", "district": "East Khasi Hills", "population": 5800, "isolation_risk": "HIGH"},
+    {"id": "vil-ziro", "name": "Ziro Valley Hamlets", "district": "Lower Subansiri", "population": 9100, "isolation_risk": "MEDIUM"},
+    {"id": "vil-mon", "name": "Mon Border Villages", "district": "Mon", "population": 7400, "isolation_risk": "HIGH"},
+    {"id": "vil-haflong", "name": "Haflong Periphery", "district": "Dima Hasao", "population": 4200, "isolation_risk": "MEDIUM"},
+    {"id": "vil-mokokchung", "name": "Mokokchung Rural", "district": "Mokokchung", "population": 11200, "isolation_risk": "LOW"},
+    {"id": "vil-tezpur", "name": "Tezpur Riverside", "district": "Sonitpur", "population": 15600, "isolation_risk": "LOW"},
+]
+
+DEMO_SUPPLY = [
+    {"commodity": "MEDICINE", "at_risk_count": 7, "severity": "CRITICAL"},
+    {"commodity": "FOOD", "at_risk_count": 13, "severity": "HIGH"},
+    {"commodity": "WATER", "at_risk_count": 8, "severity": "WARNING"},
+    {"commodity": "FUEL", "at_risk_count": 3, "severity": "INFO"},
+]
+
+
+async def seed_dashboard():
+    if await db.roads.count_documents({}) == 0:
+        await db.roads.insert_many([{**r, "source": "DEMO"} for r in DEMO_ROADS])
+    if await db.incidents.count_documents({}) == 0:
+        await db.incidents.insert_many([{**i, "source_tag": "DEMO"} for i in DEMO_INCIDENTS])
+    if await db.vehicles.count_documents({}) == 0:
+        await db.vehicles.insert_many([{**v, "source": "DEMO"} for v in DEMO_VEHICLES])
+    if await db.villages.count_documents({}) == 0:
+        await db.villages.insert_many([{**v, "source": "DEMO"} for v in DEMO_VILLAGES])
+    if await db.supply_risks.count_documents({}) == 0:
+        await db.supply_risks.insert_many([{**s, "source": "DEMO"} for s in DEMO_SUPPLY])
+
+
+@api.get("/dashboard/summary")
+async def dashboard_summary(user: dict = Depends(get_current_user)):
+    roads = await db.roads.find({}, {"_id": 0}).to_list(1000)
+    incidents = await db.incidents.find({}, {"_id": 0}).sort("created_minutes_ago", 1).to_list(100)
+    vehicles = await db.vehicles.find({}, {"_id": 0}).to_list(500)
+    villages = await db.villages.find({}, {"_id": 0}).to_list(500)
+    supply = await db.supply_risks.find({}, {"_id": 0}).to_list(100)
+
+    now = datetime.now(timezone.utc)
+    for i in incidents:
+        i["created_at"] = _iso_mins_ago(i.get("created_minutes_ago", 0))
+        i.pop("created_minutes_ago", None)
+
+    kpis = {
+        "active_vehicles": sum(1 for v in vehicles if v.get("status") in ("IN_TRANSIT", "DELAYED")),
+        "at_risk_corridors": sum(1 for r in roads if r.get("status") in ("AT_RISK", "RESTRICTED")),
+        "blocked_roads": sum(1 for r in roads if r.get("status") in ("BLOCKED", "GOVERNMENT_CLOSED")),
+        "critical_alerts": sum(1 for i in incidents if i.get("severity") in ("CRITICAL", "HIGH")),
+        "villages_isolation_risk": sum(1 for v in villages if v.get("isolation_risk") in ("HIGH", "CRITICAL")),
+        "critical_supply_locations": sum(s.get("at_risk_count", 0) for s in supply if s.get("severity") == "CRITICAL"),
+    }
+
+    return {
+        "provenance": "DEMO",
+        "generated_at": now.isoformat(),
+        "kpis": kpis,
+        "roads": {
+            "type": "FeatureCollection",
+            "features": [
+                {"type": "Feature", "geometry": r["geometry"], "properties": {k: v for k, v in r.items() if k != "geometry"}}
+                for r in roads
+            ],
+        },
+        "incidents": incidents,
+        "vehicles": vehicles,
+        "supply": supply,
+    }
 
 
 @app.on_event("shutdown")

@@ -1,0 +1,30 @@
+{
+  "summary": "Iteration 2 — Command Center. Backend /api/dashboard/summary and frontend Command Center fully functional. All 4 pytest backend tests pass (auth-gate, shape, KPI values, logistics read). Frontend visual + interaction test confirms title, DEMO chip, live indicator with pulsing dot, all 6 KPIs (11/3/2/4/4/7), 7 active incidents (RESOLVED excluded), 12 vehicle markers, 7 incident markers, 4 supply cards, MapLibre canvas renders at 1536x848 with OSM tiles, layer toggles hide/show vehicles + incidents, legend with 6 status colors, all 8 gov nav items, logout works, 10s polling resets the counter (observed 7s→1s→0s). One issue: /logistics workspace page does not render NavRail — logistics operator sees a standalone top bar with 'Sign out' instead of the role-scoped NavRail (Workspace/Fleet/Routes/Alerts). NavRail role-scoping logic itself is correct.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "LogisticsWorkspace (PostLoginStub)", "issue": "NavRail is not rendered on /logistics; logistics operator cannot access Workspace/Fleet/Routes/Alerts sidebar navigation. NavRail role-scoping (NAV_GROUPS.logistics) is correctly implemented but the page doesn't mount <NavRail/>.", "selector": "[data-testid=\"nav-rail\"]", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_dashboard.py", "/app/test_reports/pytest/iter2_results.xml"],
+  "action_items": [
+    "Render <NavRail/> on the LogisticsWorkspace / PostLoginStub page (and any other role-scoped landing page) so role-scoped navigation is visible to logistics operators."
+  ],
+  "critical_code_review_comments": [
+    "NerMap.jsx line 145 uses `SEVERITY` object defined at bottom of file (line 155) — works due to module hoisting but readability suffers; move the const to the top with STATUS_COLORS.",
+    "dashboard_summary iterates roads twice (once to build features, once for KPIs) — fine at 10 rows, but if roads scale up consider a single pass.",
+    "CommandCenter polls every 10s and drops the previous request result on error silently (only sets banner); OK for demo, but no exponential backoff.",
+    "seed_dashboard only seeds when collection is empty — good for idempotence, but any schema drift in future iterations will require manual clearing.",
+    "Attribution control passed as object `attributionControl: { compact: true }` in MapLibre v6 — verify constructor accepts option object vs boolean; currently renders OK."
+  ],
+  "updated_files": ["/app/backend/tests/test_dashboard.py"],
+  "success_rate": {"backend": "100%", "frontend": "92%"},
+  "test_credentials": "gov.admin@neris.demo / Demo@2026 (used); logistics@neris.demo / Demo@2026 (used)",
+  "seed_data_creation": "None — used server-seeded DEMO dataset.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Command Center at /command-center is fully green. Only remaining issue is that /logistics (PostLoginStub) does not include the NavRail component. When retesting, verify NavRail appears on all authenticated role landing pages and that logistics user sees exactly Workspace/Fleet/Routes/Alerts items (no Command/Incidents/Supply/Predictions/Audit).",
+  "rca of the issue": "LogisticsWorkspace/PostLoginStub page (frontend/src/pages/PostLoginStub.jsx) renders its own header without importing NavRail. Fix: wrap the page layout in the same flex+NavRail structure as CommandCenter.jsx (see lines 63-66)."
+}
