@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowRight, TriangleAlert, Radio, ShieldCheck, CarFront } from "lucide-react";
-import api from "@/lib/api";
+import { ArrowRight, TriangleAlert, Radio, ShieldCheck, CarFront, Play, Navigation, Loader2, AlertOctagon } from "lucide-react";
+import { toast } from "sonner";
+import api, { formatApiErrorDetail } from "@/lib/api";
+import { ensureWS, subscribeWS } from "@/lib/ws";
 import NavRail from "@/components/NavRail";
 import PageHeader from "@/components/PageHeader";
 import EmergencyBanner from "@/components/EmergencyBanner";
@@ -34,27 +36,78 @@ export default function LogisticsWorkspace() {
   const [deliveries, setDeliveries] = useState(null);
   const [alerts, setAlerts] = useState(null);
   const [accidents, setAccidents] = useState(null);
+  const [trips, setTrips] = useState(null);
+  const [tripForm, setTripForm] = useState({ origin: "", destination: "", vehicle_type: "TRUCK" });
+  const [places, setPlaces] = useState([]);
+  const [starting, setStarting] = useState(false);
+  const [reroute, setReroute] = useState(null);
 
   const fetchAll = useCallback(async () => {
     try {
-      const [s, d, a, acc] = await Promise.all([
+      const [s, d, a, acc, t] = await Promise.all([
         api.get("/dashboard/summary"),
         api.get("/deliveries"),
         api.get("/alerts"),
         api.get("/accidents"),
+        api.get("/trips"),
       ]);
       setSummary(s.data);
       setDeliveries(d.data);
       setAlerts(a.data);
       setAccidents(acc.data);
+      setTrips(t.data);
     } catch (e) { /* keep last */ }
   }, []);
 
   useEffect(() => {
+    api.get("/routes/places").then((r) => setPlaces(r.data)).catch(() => {});
     fetchAll();
     const t = setInterval(fetchAll, 10000);
     return () => clearInterval(t);
   }, [fetchAll]);
+
+  useEffect(() => {
+    ensureWS();
+    const unsub = subscribeWS((msg) => {
+      if (msg.type === "REROUTE_REQUIRED") {
+        setReroute(msg);
+        toast.error(`Reroute required: ${msg.road_name} is now ${msg.new_status.replace(/_/g, " ")}`, { duration: 8000 });
+        fetchAll();
+      } else if (["ROAD_STATUS_CHANGED", "INCIDENT_CREATED", "INCIDENT_VERIFIED", "EMERGENCY_DECLARED", "EMERGENCY_ENDED", "VEHICLE_ADDED"].includes(msg.type)) {
+        fetchAll();
+      }
+    });
+    return unsub;
+  }, [fetchAll]);
+
+  const startTrip = async (e) => {
+    e.preventDefault();
+    setStarting(true);
+    try {
+      const { data } = await api.post("/trips", {
+        origin: tripForm.origin.trim().toLowerCase(),
+        destination: tripForm.destination.trim().toLowerCase(),
+        vehicle_type: tripForm.vehicle_type,
+      });
+      toast.success(`Trip ${data.id} started — live rerouting active`);
+      setTripForm({ origin: "", destination: "", vehicle_type: "TRUCK" });
+      fetchAll();
+    } catch (err) {
+      toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Unable to start trip");
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const endTrip = async (id) => {
+    try {
+      await api.patch(`/trips/${id}/end`);
+      toast.success("Trip ended");
+      fetchAll();
+    } catch (e) {
+      toast.error("Unable to end trip");
+    }
+  };
 
   const kpis = deliveries && summary ? [
     { label: "Active Vehicles", value: summary.kpis.active_vehicles },
@@ -75,6 +128,15 @@ export default function LogisticsWorkspace() {
 
         <EmergencyBanner />
 
+        {reroute && (
+          <div className="flex-shrink-0 bg-red-600 text-white px-5 py-2.5 flex items-center gap-2.5 text-[13px]" data-testid="logistics-reroute-banner">
+            <AlertOctagon size={15} className="flex-shrink-0" />
+            <span className="font-semibold">REROUTE REQUIRED</span>
+            <span>{reroute.road_name} is now {reroute.new_status.replace(/_/g, " ")} — trip route recalculated.</span>
+            <button onClick={() => setReroute(null)} className="ml-auto text-[11px] underline underline-offset-2" data-testid="logistics-reroute-dismiss">Dismiss</button>
+          </div>
+        )}
+
         <div className="flex-shrink-0 grid grid-cols-2 md:grid-cols-4 border-b hairline bg-white" data-testid="logistics-kpis">
           {(kpis.length ? kpis : [1, 2, 3, 4]).map((k, i) => (
             <div key={i} className={`px-5 py-3 ${i > 0 ? "border-l hairline" : ""}`}>
@@ -90,6 +152,82 @@ export default function LogisticsWorkspace() {
 
         <div className="flex-1 flex min-h-0">
           <div className="flex-1 overflow-y-auto p-5 min-w-0">
+            {/* Trips (driver mode merged into logistics) */}
+            <div className="mb-5 bg-white border hairline rounded-md p-4" data-testid="logistics-trips">
+              <div className="text-[11px] uppercase tracking-widest text-neutral-500 font-semibold mb-3">Trips — start & live status</div>
+              <form onSubmit={startTrip} className="flex flex-wrap gap-2 items-end" data-testid="logistics-trip-form">
+                <input
+                  list="logistics-places"
+                  value={tripForm.origin}
+                  onChange={(e) => setTripForm((f) => ({ ...f, origin: e.target.value }))}
+                  placeholder="From"
+                  required
+                  className="h-9 px-3 border hairline rounded-md text-[12.5px] capitalize w-36"
+                  data-testid="logistics-trip-origin"
+                />
+                <input
+                  list="logistics-places"
+                  value={tripForm.destination}
+                  onChange={(e) => setTripForm((f) => ({ ...f, destination: e.target.value }))}
+                  placeholder="To"
+                  required
+                  className="h-9 px-3 border hairline rounded-md text-[12.5px] capitalize w-36"
+                  data-testid="logistics-trip-destination"
+                />
+                <datalist id="logistics-places">
+                  {places.map((p) => <option key={p} value={p} />)}
+                </datalist>
+                <select
+                  value={tripForm.vehicle_type}
+                  onChange={(e) => setTripForm((f) => ({ ...f, vehicle_type: e.target.value }))}
+                  className="h-9 px-2 border hairline rounded-md text-[12.5px] bg-white"
+                  data-testid="logistics-trip-vehicle"
+                >
+                  {["TRUCK", "LIGHT", "SUV", "TWO_WHEELER", "EMERGENCY"].map((t) => <option key={t} value={t}>{t.replace("_", " ")}</option>)}
+                </select>
+                <button
+                  type="submit"
+                  disabled={starting}
+                  className="h-9 px-3.5 rounded-md bg-[var(--accent-primary)] hover:bg-[var(--accent-primary-hover)] disabled:opacity-60 text-white text-[12.5px] font-medium flex items-center gap-1.5"
+                  data-testid="logistics-trip-start"
+                >
+                  {starting ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />}
+                  Start Trip
+                </button>
+              </form>
+
+              <div className="mt-3 space-y-1.5" data-testid="logistics-trips-list">
+                {trips && trips.length === 0 && (
+                  <div className="text-[12px] text-neutral-500 py-2" data-testid="logistics-trips-empty">No trips yet.</div>
+                )}
+                {trips && trips.slice(0, 6).map((t) => (
+                  <div key={t.id} className="flex items-center gap-2.5 px-3 py-2 border hairline rounded-md text-[12.5px]" data-testid={`logistics-trip-${t.id}`}>
+                    <Navigation size={13} className="text-[var(--accent-primary)] flex-shrink-0" />
+                    <span className="font-medium capitalize">{t.origin} → {t.destination}</span>
+                    <span className="text-neutral-500 text-[11px] font-mono">{t.id}</span>
+                    {t.reroute_reason && (
+                      <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded" data-testid={`logistics-trip-rerouted-${t.id}`}>
+                        Rerouted: {t.reroute_reason}
+                      </span>
+                    )}
+                    <span className="ml-auto flex items-center gap-2 flex-shrink-0">
+                      <Link
+                        to={`/routes?origin=${t.origin}&destination=${t.destination}`}
+                        className="text-[11px] text-[var(--accent-primary)] hover:underline"
+                        data-testid={`logistics-trip-map-${t.id}`}
+                      >
+                        View on map
+                      </Link>
+                      <span className={`text-[9.5px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded ${t.status === "ACTIVE" ? "bg-green-50 text-green-700" : "bg-neutral-100 text-neutral-500"}`}>{t.status}</span>
+                      {t.status === "ACTIVE" && (
+                        <button onClick={() => endTrip(t.id)} className="text-[11px] text-neutral-400 hover:text-red-700" data-testid={`logistics-trip-end-${t.id}`}>End</button>
+                      )}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
             {accidents && accidents.length > 0 && (
               <div className="mb-5" data-testid="logistics-accidents">
                 <div className="text-[11px] uppercase tracking-widest text-neutral-500 font-semibold mb-2">Verified accidents on network</div>

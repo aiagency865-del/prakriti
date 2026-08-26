@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import { Layers } from "lucide-react";
 import api from "@/lib/api";
+import { ensureWS, subscribeWS } from "@/lib/ws";
+import { useAuth } from "@/context/AuthContext";
 import NavRail from "@/components/NavRail";
 import PageHeader from "@/components/PageHeader";
 import NerMap, { STATUS_COLORS } from "@/components/NerMap";
 import RoadControlDrawer from "@/components/RoadControlDrawer";
 
 export default function GisMap() {
+  const { user } = useAuth();
+  const canSeeLiveVehicles = user && ["SUPER_ADMIN", "GOVERNMENT_ADMIN", "GOVERNMENT_OFFICER", "DISTRICT_OFFICER", "FIELD_OFFICER"].includes(user.role);
   const [data, setData] = useState(null);
   const [zones, setZones] = useState([]);
   const [environment, setEnvironment] = useState(null);
@@ -32,6 +36,16 @@ export default function GisMap() {
     return () => clearInterval(t);
   }, [fetchAll]);
 
+  useEffect(() => {
+    ensureWS();
+    const unsub = subscribeWS((msg) => {
+      if (["ROAD_STATUS_CHANGED", "INCIDENT_CREATED", "INCIDENT_VERIFIED", "EMERGENCY_DECLARED", "EMERGENCY_ENDED", "VEHICLE_ADDED"].includes(msg.type)) {
+        fetchAll();
+      }
+    });
+    return unsub;
+  }, [fetchAll]);
+
   return (
     <div className="h-screen flex bg-[var(--surface-base)] overflow-hidden" data-testid="gis-map-page">
       <NavRail />
@@ -41,9 +55,9 @@ export default function GisMap() {
           {data ? (
             <NerMap
               roads={data.roads}
-              vehicles={data.vehicles}
+              vehicles={canSeeLiveVehicles ? data.vehicles : []}
               incidents={data.incidents.filter((i) => i.status !== "RESOLVED")}
-              layers={layers}
+              layers={{ ...layers, vehicles: layers.vehicles && canSeeLiveVehicles }}
               onRoadClick={(props) => setSelectedRoad(props)}
               zones={zones}
               environment={environment}
@@ -58,7 +72,7 @@ export default function GisMap() {
             </div>
             {[
               { key: "roads", label: "Road Status" },
-              { key: "vehicles", label: "Vehicles" },
+              ...(canSeeLiveVehicles ? [{ key: "vehicles", label: "Vehicles (live)" }] : []),
               { key: "incidents", label: "Incidents" },
             ].map((l) => (
               <label key={l.key} className="flex items-center gap-2 py-1 text-[12px] text-neutral-700 cursor-pointer">

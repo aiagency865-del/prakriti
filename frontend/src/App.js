@@ -42,6 +42,7 @@ export default function App() {
             <Route path="/command-center" element={<Protected><CommandCenter /></Protected>} />
             <Route path="/logistics" element={<Protected><LogisticsWorkspace /></Protected>} />
             <Route path="/field" element={<Protected><FieldReporting /></Protected>} />
+            <Route path="/driver" element={<Navigate to="/logistics" replace />} />
             <Route path="/public" element={<Protected><PublicAdvisories /></Protected>} />
             <Route path="/map" element={<Protected><GisMap /></Protected>} />
             <Route path="/vehicles" element={<Protected><Vehicles /></Protected>} />

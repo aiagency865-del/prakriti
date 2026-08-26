@@ -9,6 +9,17 @@ North Eastern Region Intelligence System (SIH26002). This iteration: white/insti
 - Field Officer (mobile reporting)
 - Public User (read-only)
 
+## Iteration 7 (DONE — 2026-02) — Real routing + WebSocket push
+- OSRM (public demo server, real OpenStreetMap road network) for route geometry/distance/ETA; corridor statuses overlaid by proximity; demo graph kept as offline fallback
+- Route auto-fit bounds, Google-blue MAIN line + status overlays
+- WS push at /api/ws?token= — broadcasts: ROAD_STATUS_CHANGED, INCIDENT_*, EMERGENCY_*, NOTIFICATION, FIELD_REPORT, PUBLIC_REPORT, VEHICLE_ADDED; targeted REROUTE_REQUIRED to drivers
+- Trips API (start/list/end); blocking a road mid-trip pushes instant reroute to affected drivers
+
+## Iteration 8 (DONE — 2026-02) — Driver merged into logistics + trips monitoring + AI auto-block
+- Driver login removed; DRIVER role uses Logistics tab → /logistics (trips section merged); /driver redirects
+- GET /api/trips/summary (gov+field only): live trip positions (progress along polyline), per-corridor vehicle counts; vehicles layer + trip markers gated to gov/field on maps
+- AI escalation pipeline: corridor hazard ≥75% → PENDING escalation + 5-min countdown notification to gov/field; Acknowledge (MONITOR) cancels; Block now; unanswered → road auto-BLOCKED + audit + driver reroutes
+
 ## Iteration 5 (DONE — 2026-02) — Roles, verification pipeline, emergencies, environment overlays
 - Pages: LogisticsWorkspace, FieldReporting (offline queue), PublicAdvisories, GisMap, Incidents, Supply, Predictions (table + map), Alerts, Audit — all live, no stubs
 - Public reports → PENDING → gov/field verify or reject → verified items broadcast to all; alerts feed is role-aware

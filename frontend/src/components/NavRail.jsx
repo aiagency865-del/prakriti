@@ -1,5 +1,5 @@
 import { Link, useLocation } from "react-router-dom";
-import { Building2, LayoutDashboard, Map as MapIcon, Truck, TriangleAlert, Package, Bell, Radar, Radio, User as UserIcon, ScrollText, Route as RouteIcon, Boxes, LogOut } from "lucide-react";
+import { Building2, LayoutDashboard, Map as MapIcon, Truck, TriangleAlert, Package, Bell, Radar, Radio, User as UserIcon, ScrollText, Route as RouteIcon, Boxes, LogOut, Navigation } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 
 const NAV_GROUPS = {
@@ -35,8 +35,8 @@ const NAV_GROUPS = {
 
 function groupFor(role) {
   if (["SUPER_ADMIN", "GOVERNMENT_ADMIN", "GOVERNMENT_OFFICER", "DISTRICT_OFFICER"].includes(role)) return "gov";
-  if (role === "LOGISTICS_OPERATOR") return "logistics";
-  if (["FIELD_OFFICER", "DRIVER"].includes(role)) return "field";
+  if (["LOGISTICS_OPERATOR", "DRIVER"].includes(role)) return "logistics";
+  if (role === "FIELD_OFFICER") return "field";
   return "public";
 }
 

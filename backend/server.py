@@ -11,7 +11,8 @@ from typing import Optional, List
 
 import bcrypt
 import jwt
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request
+import httpx
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -99,6 +100,63 @@ async def get_current_user(request: Request, creds: Optional[HTTPAuthorizationCr
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     return user
+
+
+# =============================
+# WebSocket push (true realtime events)
+# =============================
+
+class ConnectionManager:
+    def __init__(self):
+        self.connections = {}  # email -> set of websockets
+
+    async def connect(self, websocket: WebSocket, email: str):
+        await websocket.accept()
+        self.connections.setdefault(email, set()).add(websocket)
+
+    def disconnect(self, websocket: WebSocket, email: str):
+        conns = self.connections.get(email)
+        if conns:
+            conns.discard(websocket)
+            if not conns:
+                self.connections.pop(email, None)
+
+    async def broadcast(self, message: dict):
+        for conns in list(self.connections.values()):
+            for ws in list(conns):
+                try:
+                    await ws.send_json(message)
+                except Exception:
+                    pass
+
+    async def send_to_user(self, email: str, message: dict):
+        for ws in list(self.connections.get(email, set())):
+            try:
+                await ws.send_json(message)
+            except Exception:
+                pass
+
+
+manager = ConnectionManager()
+
+
+@api.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket, token: str = ""):
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        email = payload.get("email")
+    except Exception:
+        await websocket.close(code=4401)
+        return
+    if not email:
+        await websocket.close(code=4401)
+        return
+    await manager.connect(websocket, email)
+    try:
+        while True:
+            await websocket.receive_text()
+    except Exception:
+        manager.disconnect(websocket, email)
 
 
 # --- Models ---
@@ -427,6 +485,26 @@ class RoadStatusUpdate(BaseModel):
     expected_duration: Optional[str] = None
 
 
+async def _reroute_trips_on_road(road_id: str, road_name: str, new_status: str):
+    """Push REROUTE_REQUIRED to every driver with an active trip through this road."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    trips = await db.trips.find({"status": "ACTIVE", "road_ids": road_id}).to_list(50)
+    for t in trips:
+        new_route = await compute_route(t["origin"], t["destination"], t.get("vehicle_type", "TRUCK"))
+        await db.trips.update_one(
+            {"id": t["id"]},
+            {"$set": {"route": new_route, "rerouted_at": now_iso, "reroute_reason": f"{road_name} is now {new_status.replace('_', ' ')}"}},
+        )
+        await manager.send_to_user(t["driver_email"], {
+            "type": "REROUTE_REQUIRED",
+            "trip_id": t["id"],
+            "road_id": road_id,
+            "road_name": road_name,
+            "new_status": new_status,
+            "route": new_route,
+        })
+
+
 @api.patch("/roads/{road_id}/status")
 async def update_road_status(road_id: str, body: RoadStatusUpdate, user: dict = Depends(get_current_user)):
     if user["role"] not in GOVERNMENT_ROLES:
@@ -462,6 +540,10 @@ async def update_road_status(road_id: str, body: RoadStatusUpdate, user: dict = 
         "timestamp": now_iso,
     })
     road.update(updates)
+
+    if new_status in ("BLOCKED", "GOVERNMENT_CLOSED"):
+        await _reroute_trips_on_road(road_id, road.get("name") or road_id, new_status)
+    await manager.broadcast({"type": "ROAD_STATUS_CHANGED", "road_id": road_id, "status": new_status, "road_name": road.get("name")})
     return road
 
 
@@ -674,29 +756,84 @@ async def route_places(user: dict = Depends(get_current_user)):
     return sorted(NER_PLACES.keys())
 
 
-@api.post("/routes/calculate")
-async def calculate_route(body: RouteRequest, user: dict = Depends(get_current_user)):
-    origin = body.origin.strip().lower()
-    destination = body.destination.strip().lower()
-    if origin not in NER_PLACES or destination not in NER_PLACES:
-        raise HTTPException(status_code=400, detail=f"Unknown place. Valid: {sorted(NER_PLACES.keys())}")
-    if origin == destination:
-        raise HTTPException(status_code=400, detail="Origin and destination must be different")
-    vehicle = body.vehicle_type.upper()
-    if vehicle not in VEHICLE_SPEEDS:
-        raise HTTPException(status_code=400, detail=f"Invalid vehicle type. Valid: {sorted(VEHICLE_SPEEDS.keys())}")
+async def _osrm_route(o, d):
+    """Real road-network routing via the public OSRM demo server (OpenStreetMap data)."""
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as http_client:
+            resp = await http_client.get(
+                f"https://router.project-osrm.org/route/v1/driving/{o[0]},{o[1]};{d[0]},{d[1]}",
+                params={"overview": "full", "geometries": "geojson"},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("routes"):
+                    rt = data["routes"][0]
+                    return rt["geometry"]["coordinates"], rt["distance"] / 1000.0, rt["duration"] / 60.0
+    except Exception:
+        pass
+    return None
 
+
+def _corridors_near(coords, roads, max_km=12.0):
+    sample = coords[:: max(1, len(coords) // 200)]
+    near = []
+    for r in roads:
+        rcoords = r["geometry"]["coordinates"]
+        if any(_haversine_km(p, q) <= max_km for p in rcoords for q in sample):
+            near.append(r)
+    return near
+
+
+async def compute_route(origin: str, destination: str, vehicle: str) -> dict:
     roads = await db.roads.find({}, {"_id": 0}).to_list(1000)
+    speed = VEHICLE_SPEEDS[vehicle]
+    osrm = await _osrm_route(NER_PLACES[origin], NER_PLACES[destination])
 
+    if osrm:
+        coords, dist_km, dur_min = osrm
+        near = _corridors_near(coords, roads)
+        segments = [
+            {"road_id": r["id"], "name": r.get("name"), "status": r.get("status"), "risk": r.get("risk"),
+             "district": r.get("district"), "distance_km": round(_line_length_km(r["geometry"]["coordinates"]), 1),
+             "geometry": r["geometry"]}
+            for r in near
+        ]
+        blocked_roads = [s["name"] for s in segments if s["status"] in ("BLOCKED", "GOVERNMENT_CLOSED")]
+        at_risk_names = [s["name"] for s in segments if s["status"] in ("AT_RISK", "RESTRICTED")]
+        risky_len = sum(s["distance_km"] for s in segments if s["status"] in ("AT_RISK", "RESTRICTED", "BLOCKED", "GOVERNMENT_CLOSED"))
+        eta_minutes = round(dur_min * (1 + 0.5 * (risky_len / max(dist_km, 1))))
+        risk_score = max([s["risk"] or 0 for s in segments], default=15)
+        reason = ["Real road-network routing (OpenStreetMap via OSRM)"]
+        reason.append(f"Corridor includes government-blocked road(s): {', '.join(blocked_roads)}" if blocked_roads else "No government closures near this route")
+        if at_risk_names:
+            reason.append(f"Elevated hazard on: {', '.join(at_risk_names)}")
+        reason.append(f"Suitable for {vehicle.replace('_', ' ').title()}")
+        return {
+            "provenance": "OSM_ROAD_NETWORK + LIVE_CORRIDOR_STATUS",
+            "origin": {"name": origin, "lng": NER_PLACES[origin][0], "lat": NER_PLACES[origin][1]},
+            "destination": {"name": destination, "lng": NER_PLACES[destination][0], "lat": NER_PLACES[destination][1]},
+            "vehicle_type": vehicle,
+            "recommended_route": {
+                "segments": segments,
+                "polyline": coords,
+                "distance_km": round(dist_km, 1),
+                "eta_minutes": eta_minutes,
+                "risk_score": risk_score,
+                "contains_blocked": len(blocked_roads) > 0,
+                "blocked_roads": blocked_roads,
+                "road_ids": [r["id"] for r in near],
+            },
+            "reason": reason,
+            "alternative_route": None,
+        }
+
+    # Fallback: demo corridor graph (offline / OSRM unreachable)
     adj = _build_graph(roads, exclude_blocked=True)
     edges = _dijkstra(adj, origin, destination)
-    contains_blocked = False
     if edges is None:
         adj_all = _build_graph(roads, exclude_blocked=False)
         edges = _dijkstra(adj_all, origin, destination)
-        contains_blocked = True
     if edges is None:
-        # Last-resort direct leg (off-network, demo)
         pseudo = {
             "id": f"direct-{origin}-{destination}", "name": f"Direct route {origin.title()}–{destination.title()} (off-network)",
             "status": "LOCAL", "risk": 35, "district": "—",
@@ -706,19 +843,14 @@ async def calculate_route(body: RouteRequest, user: dict = Depends(get_current_u
 
     segments, polyline = _assemble_route(edges, origin)
     distance_km = round(_line_length_km(polyline), 1)
-    speed = VEHICLE_SPEEDS[vehicle]
     risky_len = sum(s["distance_km"] for s in segments if s["status"] in ("AT_RISK", "RESTRICTED", "BLOCKED", "GOVERNMENT_CLOSED"))
     delay_factor = 1 + 0.5 * (risky_len / max(distance_km, 1))
     eta_minutes = round(distance_km / speed * 60 * delay_factor)
     risk_score = max((s["risk"] or 0) for s in segments)
     blocked_roads = [s["name"] for s in segments if s["status"] in ("BLOCKED", "GOVERNMENT_CLOSED")]
-    contains_blocked = len(blocked_roads) > 0
 
-    reason = []
-    if blocked_roads:
-        reason.append(f"Corridor includes government-blocked road(s): {', '.join(blocked_roads)}")
-    else:
-        reason.append("No government closures on this route")
+    reason = ["Demo corridor-graph routing (offline mode)"]
+    reason.append(f"Corridor includes government-blocked road(s): {', '.join(blocked_roads)}" if blocked_roads else "No government closures on this route")
     at_risk_names = [s["name"] for s in segments if s["status"] in ("AT_RISK", "RESTRICTED")]
     if at_risk_names:
         reason.append(f"Elevated hazard on: {', '.join(at_risk_names)}")
@@ -728,7 +860,7 @@ async def calculate_route(body: RouteRequest, user: dict = Depends(get_current_u
     if not blocked_roads:
         adj_naive = _build_graph(roads, exclude_blocked=False)
         naive_edges = _dijkstra(adj_naive, origin, destination)
-        if naive_edges and [e[2]["id"] for e in naive_edges] != [e[2] for e in edges]:
+        if naive_edges and [e[2]["id"] for e in naive_edges] != [e[2]["id"] for e in edges]:
             nseg, npoly = _assemble_route(naive_edges, origin)
             n_blocked = [s["name"] for s in nseg if s["status"] in ("BLOCKED", "GOVERNMENT_CLOSED")]
             if n_blocked:
@@ -753,12 +885,27 @@ async def calculate_route(body: RouteRequest, user: dict = Depends(get_current_u
             "distance_km": distance_km,
             "eta_minutes": eta_minutes,
             "risk_score": risk_score,
-            "contains_blocked": contains_blocked,
+            "contains_blocked": len(blocked_roads) > 0,
             "blocked_roads": blocked_roads,
+            "road_ids": [s["road_id"] for s in segments if not s["road_id"].startswith(("local-", "direct-"))],
         },
         "reason": reason,
         "alternative_route": alternative,
     }
+
+
+@api.post("/routes/calculate")
+async def calculate_route(body: RouteRequest, user: dict = Depends(get_current_user)):
+    origin = body.origin.strip().lower()
+    destination = body.destination.strip().lower()
+    if origin not in NER_PLACES or destination not in NER_PLACES:
+        raise HTTPException(status_code=400, detail=f"Unknown place. Valid: {sorted(NER_PLACES.keys())}")
+    if origin == destination:
+        raise HTTPException(status_code=400, detail="Origin and destination must be different")
+    vehicle = body.vehicle_type.upper()
+    if vehicle not in VEHICLE_SPEEDS:
+        raise HTTPException(status_code=400, detail=f"Invalid vehicle type. Valid: {sorted(VEHICLE_SPEEDS.keys())}")
+    return await compute_route(origin, destination, vehicle)
 
 
 # =============================
@@ -832,6 +979,7 @@ async def create_field_report(body: FieldReportCreate, user: dict = Depends(get_
         "field_report_id": report["id"],
     }
     await db.incidents.insert_one({**incident})
+    await manager.broadcast({"type": "FIELD_REPORT", "id": report["id"], "title": report["description"][:80], "severity": severity})
     report.pop("_id", None)
     return report
 
@@ -888,6 +1036,7 @@ async def verify_incident(incident_id: str, user: dict = Depends(get_current_use
         "reason": "Government verification",
         "timestamp": now_iso,
     })
+    await manager.broadcast({"type": "INCIDENT_VERIFIED", "id": incident_id, "title": inc.get("title")})
     return {"id": incident_id, "status": "VERIFIED"}
 
 
@@ -917,6 +1066,7 @@ async def reject_incident(incident_id: str, user: dict = Depends(get_current_use
         "target_name": inc.get("title"), "old_state": inc.get("status"), "new_state": "REJECTED",
         "reason": "Rejected after review", "timestamp": now_iso,
     })
+    await manager.broadcast({"type": "INCIDENT_REJECTED", "id": incident_id, "title": inc.get("title")})
     return {"id": incident_id, "status": "REJECTED"}
 
 
@@ -1111,6 +1261,7 @@ async def create_public_report(body: PublicReportCreate, user: dict = Depends(ge
         "public_report_id": report["id"],
     }
     await db.incidents.insert_one({**incident})
+    await manager.broadcast({"type": "PUBLIC_REPORT", "id": report["id"], "title": report["description"][:80]})
     report.pop("_id", None)
     return report
 
@@ -1154,6 +1305,7 @@ async def create_notification(body: NotificationCreate, user: dict = Depends(get
         "target_name": body.title, "old_state": None, "new_state": severity,
         "reason": body.message[:200], "timestamp": now_iso,
     })
+    await manager.broadcast({"type": "NOTIFICATION", "id": notif["id"], "title": notif["title"], "severity": severity, "message": notif["message"]})
     notif.pop("_id", None)
     return notif
 
@@ -1197,6 +1349,7 @@ async def create_emergency_zone(body: EmergencyZoneCreate, user: dict = Depends(
         "target_name": body.name, "old_state": None, "new_state": f"{body.radius_km} km radius",
         "reason": body.message[:200], "timestamp": now_iso,
     })
+    await manager.broadcast({"type": "EMERGENCY_DECLARED", "id": zone["id"], "name": zone["name"], "radius_km": zone["radius_km"], "message": zone["message"]})
     zone.pop("_id", None)
     return zone
 
@@ -1271,6 +1424,7 @@ async def create_incident(body: IncidentCreate, user: dict = Depends(get_current
         "target_name": body.title, "old_state": None, "new_state": "VERIFIED",
         "reason": f"Created by {'government official' if is_gov else 'field officer'}", "timestamp": now_iso,
     })
+    await manager.broadcast({"type": "INCIDENT_CREATED", "id": incident["id"], "title": incident["title"], "severity": severity, "source": incident["source"]})
     incident.pop("_id", None)
     return incident
 
@@ -1307,6 +1461,7 @@ async def end_emergency_zone(zone_id: str, user: dict = Depends(get_current_user
         "target_name": zone.get("name"), "old_state": "ACTIVE", "new_state": "ENDED",
         "reason": "Emergency lifted", "timestamp": now_iso,
     })
+    await manager.broadcast({"type": "EMERGENCY_ENDED", "id": zone_id, "name": zone.get("name")})
     return {"id": zone_id, "active": False}
 
 
@@ -1350,8 +1505,228 @@ async def create_vehicle(body: VehicleCreate, user: dict = Depends(get_current_u
         "source": "FIELD" if user["role"] == "FIELD_OFFICER" else "GOVERNMENT",
     }
     await db.vehicles.insert_one({**vehicle})
+    await manager.broadcast({"type": "VEHICLE_ADDED", "id": vehicle["id"], "number": number})
     vehicle.pop("_id", None)
     return vehicle
+
+
+# =============================
+# Driver trips + push rerouting
+# =============================
+
+class TripCreate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    origin: str
+    destination: str
+    vehicle_type: str = "TRUCK"
+
+
+@api.post("/trips", status_code=201)
+async def start_trip(body: TripCreate, user: dict = Depends(get_current_user)):
+    origin = body.origin.strip().lower()
+    destination = body.destination.strip().lower()
+    if origin not in NER_PLACES or destination not in NER_PLACES:
+        raise HTTPException(status_code=400, detail=f"Unknown place. Valid: {sorted(NER_PLACES.keys())}")
+    if origin == destination:
+        raise HTTPException(status_code=400, detail="Origin and destination must be different")
+    vehicle = body.vehicle_type.upper()
+    if vehicle not in VEHICLE_SPEEDS:
+        raise HTTPException(status_code=400, detail=f"Invalid vehicle type. Valid: {sorted(VEHICLE_SPEEDS.keys())}")
+    route = await compute_route(origin, destination, vehicle)
+    trip = {
+        "id": f"TRIP-{uuid.uuid4().hex[:6].upper()}",
+        "driver_email": user["email"],
+        "driver_name": user.get("name"),
+        "origin": origin,
+        "destination": destination,
+        "vehicle_type": vehicle,
+        "status": "ACTIVE",
+        "road_ids": route["recommended_route"].get("road_ids", []),
+        "route": route,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.trips.insert_one({**trip})
+    trip.pop("_id", None)
+    return trip
+
+
+@api.get("/trips")
+async def list_trips(user: dict = Depends(get_current_user)):
+    q = {} if user["role"] in GOVERNMENT_ROLES else {"driver_email": user["email"]}
+    return await db.trips.find(q, {"_id": 0}).sort("created_at", -1).to_list(50)
+
+
+@api.patch("/trips/{trip_id}/end")
+async def end_trip(trip_id: str, user: dict = Depends(get_current_user)):
+    trip = await db.trips.find_one({"id": trip_id}, {"_id": 0})
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    if trip["driver_email"] != user["email"] and user["role"] not in GOVERNMENT_ROLES:
+        raise HTTPException(status_code=403, detail="You don't have permission for this action")
+    await db.trips.update_one({"id": trip_id}, {"$set": {"status": "ENDED", "ended_at": datetime.now(timezone.utc).isoformat()}})
+    return {"id": trip_id, "status": "ENDED"}
+
+
+# =============================
+# Trips monitoring (gov/field only) + AI escalation auto-block pipeline
+# =============================
+
+TRIPS_MONITOR_ROLES = GOVERNMENT_ROLES | {"FIELD_OFFICER"}
+AI_ESCALATION_THRESHOLD = 0.75
+AI_ESCALATION_WINDOW_MIN = 5
+
+
+def _trip_live_position(trip, now):
+    route = trip.get("route", {}).get("recommended_route", {})
+    poly = route.get("polyline") or []
+    eta = route.get("eta_minutes") or 60
+    try:
+        created_dt = datetime.fromisoformat(trip["created_at"])
+        if created_dt.tzinfo is None:
+            created_dt = created_dt.replace(tzinfo=timezone.utc)
+        elapsed = (now - created_dt).total_seconds() / 60.0
+    except Exception:
+        elapsed = 0
+    progress = min(0.95, max(0.0, elapsed / max(eta, 1)))
+    if poly:
+        idx = min(len(poly) - 1, int(progress * (len(poly) - 1)))
+        lng, lat = poly[idx]
+    else:
+        lng, lat = NER_PLACES.get(trip["origin"], (0, 0))
+    return progress, lat, lng
+
+
+@api.get("/trips/summary")
+async def trips_summary(user: dict = Depends(get_current_user)):
+    """Live trip positions + per-corridor counts — government and field roles only."""
+    if user["role"] not in TRIPS_MONITOR_ROLES:
+        raise HTTPException(status_code=403, detail="You don't have permission for this action")
+    trips = await db.trips.find({"status": "ACTIVE"}, {"_id": 0}).to_list(100)
+    now = datetime.now(timezone.utc)
+    by_road = {}
+    out = []
+    for t in trips:
+        progress, lat, lng = _trip_live_position(t, now)
+        out.append({
+            "id": t["id"], "driver_name": t.get("driver_name"), "driver_email": t["driver_email"],
+            "origin": t["origin"], "destination": t["destination"], "vehicle_type": t["vehicle_type"],
+            "progress": round(progress, 2), "current_lat": lat, "current_lng": lng,
+            "eta_minutes": t.get("route", {}).get("recommended_route", {}).get("eta_minutes"),
+            "reroute_reason": t.get("reroute_reason"),
+        })
+        for rid in t.get("road_ids", []):
+            by_road.setdefault(rid, {"count": 0, "vehicles": []})
+            by_road[rid]["count"] += 1
+            by_road[rid]["vehicles"].append(t["vehicle_type"])
+    road_names = {r["id"]: r["name"] for r in await db.roads.find({}, {"_id": 0}).to_list(1000)}
+    by_road_named = {rid: {"name": road_names.get(rid, rid), **v} for rid, v in by_road.items()}
+    return {"active_count": len(trips), "by_road": by_road_named, "trips": out}
+
+
+async def _evaluate_escalations():
+    """Create pending escalations for corridors crossing the hazard threshold and
+    auto-block roads whose escalation went unanswered for AI_ESCALATION_WINDOW_MIN minutes."""
+    now = datetime.now(timezone.utc)
+    roads = await db.roads.find({}, {"_id": 0}).to_list(1000)
+    for r in roads:
+        if r["status"] in ("BLOCKED", "GOVERNMENT_CLOSED"):
+            continue
+        feats = CORRIDOR_FEATURES.get(r["id"], {})
+        if not feats:
+            continue
+        flood = predict_flood(feats.get("flood", {}))["flood_probability"]
+        land = predict_landslide(feats.get("landslide", {}))["landslide_probability"]
+        hazard, prob = ("FLOOD", flood) if flood >= land else ("LANDSLIDE", land)
+        if prob >= AI_ESCALATION_THRESHOLD:
+            recent = await db.ai_escalations.find_one({"road_id": r["id"], "status": {"$in": ["PENDING", "ACKED"]}})
+            if not recent:
+                esc = {
+                    "id": f"ESC-{uuid.uuid4().hex[:6].upper()}",
+                    "road_id": r["id"], "road_name": r["name"], "hazard": hazard,
+                    "probability": prob, "status": "PENDING",
+                    "created_at": now.isoformat(),
+                    "deadline_at": (now + timedelta(minutes=AI_ESCALATION_WINDOW_MIN)).isoformat(),
+                }
+                await db.ai_escalations.insert_one({**esc})
+                esc.pop("_id", None)
+                await manager.broadcast({
+                    "type": "AI_ESCALATION", "id": esc["id"], "road_name": esc["road_name"],
+                    "hazard": hazard, "probability": prob, "deadline_at": esc["deadline_at"],
+                })
+    # sweep: auto-block expired pending escalations
+    expired = await db.ai_escalations.find({"status": "PENDING"}).to_list(50)
+    for e in expired:
+        try:
+            deadline = datetime.fromisoformat(e["deadline_at"])
+            if deadline.tzinfo is None:
+                deadline = deadline.replace(tzinfo=timezone.utc)
+        except Exception:
+            continue
+        if deadline <= now:
+            now_iso = now.isoformat()
+            road = await db.roads.find_one({"id": e["road_id"]}, {"_id": 0})
+            if road and road["status"] not in ("BLOCKED", "GOVERNMENT_CLOSED"):
+                reason = f"Auto-blocked: AI {e['hazard'].lower()} risk {int(e['probability'] * 100)}% unanswered for {AI_ESCALATION_WINDOW_MIN} min"
+                await db.roads.update_one({"id": e["road_id"]}, {"$set": {
+                    "status": "BLOCKED", "status_reason": reason,
+                    "updated_at": now_iso, "updated_by": "neris-ai",
+                }})
+                await db.government_actions.insert_one({
+                    "id": str(uuid.uuid4()), "official_id": "neris-ai", "official_email": "ai@neris.system",
+                    "official_name": "NERIS AI", "action_type": "ROAD_AUTO_BLOCKED", "target_type": "road",
+                    "target_id": e["road_id"], "target_name": e["road_name"],
+                    "old_state": road["status"], "new_state": "BLOCKED", "reason": reason, "timestamp": now_iso,
+                })
+                await manager.broadcast({"type": "ROAD_STATUS_CHANGED", "road_id": e["road_id"], "status": "BLOCKED", "road_name": e["road_name"]})
+                await _reroute_trips_on_road(e["road_id"], e["road_name"], "BLOCKED")
+            await db.ai_escalations.update_one({"id": e["id"]}, {"$set": {"status": "AUTO_BLOCKED"}})
+
+
+@api.get("/ai/escalations")
+async def list_escalations(user: dict = Depends(get_current_user)):
+    if user["role"] not in TRIPS_MONITOR_ROLES:
+        raise HTTPException(status_code=403, detail="You don't have permission for this action")
+    await _evaluate_escalations()
+    rows = await db.ai_escalations.find({}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    return {"threshold": AI_ESCALATION_THRESHOLD, "window_minutes": AI_ESCALATION_WINDOW_MIN, "escalations": rows}
+
+
+class EscalationAck(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    action: str
+
+
+@api.post("/ai/escalations/{esc_id}/ack")
+async def ack_escalation(esc_id: str, body: EscalationAck, user: dict = Depends(get_current_user)):
+    if user["role"] not in TRIPS_MONITOR_ROLES:
+        raise HTTPException(status_code=403, detail="You don't have permission for this action")
+    esc = await db.ai_escalations.find_one({"id": esc_id})
+    if not esc:
+        raise HTTPException(status_code=404, detail="Escalation not found")
+    if esc["status"] != "PENDING":
+        raise HTTPException(status_code=400, detail=f"Escalation already handled ({esc['status']})")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if body.action == "BLOCK_NOW":
+        reason = f"Blocked by {user.get('name')}: AI {esc['hazard'].lower()} risk {int(esc['probability'] * 100)}%"
+        road = await db.roads.find_one({"id": esc["road_id"]}, {"_id": 0})
+        if road:
+            await db.roads.update_one({"id": esc["road_id"]}, {"$set": {
+                "status": "BLOCKED", "status_reason": reason, "updated_at": now_iso, "updated_by": user["email"],
+            }})
+            await db.government_actions.insert_one({
+                "id": str(uuid.uuid4()), "official_id": user["id"], "official_email": user["email"],
+                "official_name": user.get("name"), "action_type": "ROAD_STATUS_CHANGE", "target_type": "road",
+                "target_id": esc["road_id"], "target_name": esc["road_name"],
+                "old_state": road["status"], "new_state": "BLOCKED", "reason": reason, "timestamp": now_iso,
+            })
+            await manager.broadcast({"type": "ROAD_STATUS_CHANGED", "road_id": esc["road_id"], "status": "BLOCKED", "road_name": esc["road_name"]})
+            await _reroute_trips_on_road(esc["road_id"], esc["road_name"], "BLOCKED")
+        await db.ai_escalations.update_one({"id": esc_id}, {"$set": {"status": "BLOCKED_MANUAL", "acked_by": user["email"], "acked_at": now_iso}})
+        return {"id": esc_id, "status": "BLOCKED_MANUAL"}
+    if body.action == "MONITOR":
+        await db.ai_escalations.update_one({"id": esc_id}, {"$set": {"status": "ACKED", "acked_by": user["email"], "acked_at": now_iso}})
+        return {"id": esc_id, "status": "ACKED"}
+    raise HTTPException(status_code=400, detail="action must be MONITOR or BLOCK_NOW")
 
 
 @app.on_event("shutdown")

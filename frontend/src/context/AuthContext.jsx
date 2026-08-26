@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import api from "@/lib/api";
+import { ensureWS, closeWS } from "@/lib/ws";
 
 const AuthContext = createContext(null);
 
@@ -16,7 +17,7 @@ export function AuthProvider({ children }) {
     }
     api
       .get("/auth/me")
-      .then((r) => setUser(r.data))
+      .then((r) => { setUser(r.data); ensureWS(); })
       .catch(() => {
         localStorage.removeItem("neris_token");
         setUser(false);
@@ -28,11 +29,13 @@ export function AuthProvider({ children }) {
     const { data } = await api.post("/auth/login", { email, password });
     localStorage.setItem("neris_token", data.token);
     setUser(data.user);
+    ensureWS();
     return data.user;
   };
 
   const logout = () => {
     localStorage.removeItem("neris_token");
+    closeWS();
     setUser(false);
   };
 

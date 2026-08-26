@@ -67,6 +67,7 @@ export default function NerMap({ roads, vehicles, incidents, layers = {}, onRoad
   const incMarkersRef = useRef([]);
   const envMarkersRef = useRef([]);
   const endMarkersRef = useRef([]);
+  const lastFitRef = useRef("");
   const clickRef = useRef(null);
   clickRef.current = onRoadClick;
 
@@ -187,6 +188,20 @@ export default function NerMap({ roads, vehicles, incidents, layers = {}, onRoad
     if (!map || !loadedRef.current) return;
     const src = map.getSource("route");
     if (src) src.setData(route || { type: "FeatureCollection", features: [] });
+    // Auto-frame the route when a new one is drawn
+    if (route && route.features.length > 0) {
+      const coords = route.features.flatMap((f) => f.geometry.coordinates);
+      const sig = coords.length ? `${coords[0][0].toFixed(3)},${coords[coords.length - 1][0].toFixed(3)},${route.features.length}` : "";
+      if (sig && sig !== lastFitRef.current) {
+        lastFitRef.current = sig;
+        const lngs = coords.map((c) => c[0]);
+        const lats = coords.map((c) => c[1]);
+        map.fitBounds(
+          [[Math.min(...lngs), Math.min(...lats)], [Math.max(...lngs), Math.max(...lats)]],
+          { padding: 70, duration: 800, maxZoom: 11 }
+        );
+      }
+    }
   }, [route]);
 
   useEffect(() => {

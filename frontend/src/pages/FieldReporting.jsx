@@ -5,6 +5,7 @@ import api, { formatApiErrorDetail } from "@/lib/api";
 import NavRail from "@/components/NavRail";
 import PageHeader from "@/components/PageHeader";
 import EmergencyBanner from "@/components/EmergencyBanner";
+import EscalationsPanel from "@/components/EscalationsPanel";
 
 const REPORT_TYPES = ["LANDSLIDE", "FLOOD", "ROAD_DAMAGE", "BRIDGE_DAMAGE", "ACCIDENT", "BLOCKAGE", "OTHER"];
 const SEVERITIES = ["INFO", "WARNING", "HIGH", "CRITICAL"];
@@ -223,6 +224,9 @@ export default function FieldReporting() {
           </div>
 
           <div className="flex-1 overflow-y-auto p-5">
+            <div className="bg-white border hairline rounded-md mb-4 overflow-hidden">
+              <EscalationsPanel />
+            </div>
             <div className="text-[11px] uppercase tracking-widest text-neutral-500 font-semibold mb-3">My reports</div>
             <div className="space-y-2" data-testid="field-reports-list">
               {!reports && [1, 2, 3].map((n) => (

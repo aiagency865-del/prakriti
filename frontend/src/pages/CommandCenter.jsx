@@ -3,11 +3,13 @@ import { Link } from "react-router-dom";
 import api from "@/lib/api";
 import { toast } from "sonner";
 import { formatApiErrorDetail } from "@/lib/api";
+import { ensureWS, subscribeWS } from "@/lib/ws";
 import NavRail from "@/components/NavRail";
 import NerMap, { STATUS_COLORS } from "@/components/NerMap";
 import RoadControlDrawer from "@/components/RoadControlDrawer";
 import EmergencyBanner from "@/components/EmergencyBanner";
 import EmergencyZoneModal from "@/components/EmergencyZoneModal";
+import EscalationsPanel from "@/components/EscalationsPanel";
 import { useAuth } from "@/context/AuthContext";
 import {
   Mountain, CloudRain, Wrench, Car, CloudLightning, HelpCircle,
@@ -51,18 +53,22 @@ export default function CommandCenter() {
   const [selectedRoad, setSelectedRoad] = useState(null);
   const [zones, setZones] = useState([]);
   const [environment, setEnvironment] = useState(null);
+  const [tripsSummary, setTripsSummary] = useState(null);
   const [emergencyOpen, setEmergencyOpen] = useState(false);
+  const canSeeLiveVehicles = isGov || user?.role === "FIELD_OFFICER";
 
   const fetchAll = useCallback(async () => {
     try {
-      const [{ data: d }, { data: z }, { data: env }] = await Promise.all([
+      const [{ data: d }, { data: z }, { data: env }, { data: ts }] = await Promise.all([
         api.get("/dashboard/summary"),
         api.get("/emergency-zones"),
         api.get("/environment"),
+        api.get("/trips/summary").catch(() => ({ data: null })),
       ]);
       setData(d);
       setZones(z);
       setEnvironment(env);
+      setTripsSummary(ts);
       setError("");
       setLastFetch(Date.now());
     } catch (e) {
@@ -85,6 +91,19 @@ export default function CommandCenter() {
     const poll = setInterval(fetchAll, 10000);
     const tick = setInterval(() => setNow(Date.now()), 1000);
     return () => { clearInterval(poll); clearInterval(tick); };
+  }, [fetchAll]);
+
+  // True realtime: instant refresh on push events (polling stays as fallback)
+  useEffect(() => {
+    ensureWS();
+    const unsub = subscribeWS((msg) => {
+      if (["ROAD_STATUS_CHANGED", "INCIDENT_CREATED", "INCIDENT_VERIFIED", "INCIDENT_REJECTED",
+           "EMERGENCY_DECLARED", "EMERGENCY_ENDED", "NOTIFICATION", "FIELD_REPORT", "PUBLIC_REPORT",
+           "VEHICLE_ADDED"].includes(msg.type)) {
+        fetchAll();
+      }
+    });
+    return unsub;
   }, [fetchAll]);
 
   const connected = !error;
@@ -167,9 +186,19 @@ export default function CommandCenter() {
             {data ? (
               <NerMap
                 roads={data.roads}
-                vehicles={data.vehicles}
+                vehicles={
+                  canSeeLiveVehicles
+                    ? [
+                        ...data.vehicles,
+                        ...(tripsSummary?.trips || []).map((t) => ({
+                          id: `trip-${t.id}`, number: t.driver_name || t.id, type: t.vehicle_type,
+                          lat: t.current_lat, lng: t.current_lng, heading: 0, speed: 0, risk: 30,
+                        })),
+                      ]
+                    : []
+                }
                 incidents={data.incidents.filter((i) => i.status !== "RESOLVED")}
-                layers={layers}
+                layers={{ ...layers, vehicles: layers.vehicles && canSeeLiveVehicles }}
                 onRoadClick={(props) => setSelectedRoad(props)}
                 zones={zones}
                 environment={environment}
@@ -185,7 +214,7 @@ export default function CommandCenter() {
               </div>
               {[
                 { key: "roads", label: "Road Status" },
-                { key: "vehicles", label: "Vehicles" },
+                ...(canSeeLiveVehicles ? [{ key: "vehicles", label: "Vehicles (live)" }] : []),
                 { key: "incidents", label: "Incidents" },
               ].map((l) => (
                 <label key={l.key} className="flex items-center gap-2 py-1 text-[12px] text-neutral-700 cursor-pointer">
@@ -235,6 +264,7 @@ export default function CommandCenter() {
                 </span>
               )}
             </div>
+            <EscalationsPanel />
             <div className="flex-1 overflow-y-auto">
               {!data && [1, 2, 3, 4, 5].map((n) => (
                 <div key={n} className="px-4 py-3 border-b hairline">

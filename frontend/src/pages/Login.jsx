@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Building2, ArrowLeft, ArrowRight, Loader2, Truck, ShieldCheck, Radio, User, Eye, EyeOff } from "lucide-react";
+import { Building2, ArrowLeft, ArrowRight, Loader2, Truck, ShieldCheck, Radio, User, Eye, EyeOff, Navigation } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { formatApiErrorDetail } from "@/lib/api";
 
@@ -46,7 +46,7 @@ const roleForRoute = {
   SUPER_ADMIN: "/command-center",
   LOGISTICS_OPERATOR: "/logistics",
   FIELD_OFFICER: "/field",
-  DRIVER: "/field",
+  DRIVER: "/logistics",
   PUBLIC_USER: "/public",
 };
 

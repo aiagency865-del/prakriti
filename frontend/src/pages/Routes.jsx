@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Search, Loader2, Check, X, AlertOctagon, Bike, Car, Truck, Ambulance } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
 import api, { formatApiErrorDetail } from "@/lib/api";
+import { ensureWS, subscribeWS } from "@/lib/ws";
 import NavRail from "@/components/NavRail";
 import NerMap, { STATUS_COLORS } from "@/components/NerMap";
 import EmergencyBanner from "@/components/EmergencyBanner";
@@ -27,6 +29,7 @@ function riskBand(score) {
 }
 
 export default function Routes() {
+  const [params] = useSearchParams();
   const [places, setPlaces] = useState([]);
   const [origin, setOrigin] = useState("");
   const [destination, setDestination] = useState("");
@@ -41,6 +44,20 @@ export default function Routes() {
 
   useEffect(() => {
     api.get("/routes/places").then((r) => setPlaces(r.data)).catch(() => {});
+  }, []);
+
+  // Prefill + auto-calculate from query params (e.g. from a trip's "View on map")
+  useEffect(() => {
+    const o = params.get("origin");
+    const d = params.get("destination");
+    if (o && d) {
+      setOrigin(o);
+      setDestination(d);
+      const q = { origin: o.toLowerCase(), destination: d.toLowerCase(), vehicle_type: vehicleType };
+      lastQuery.current = q;
+      calculate(q);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Live road state — government changes propagate here every 10s
@@ -60,6 +77,17 @@ export default function Routes() {
     fetchRoads();
     const t = setInterval(fetchRoads, 10000);
     return () => clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    ensureWS();
+    const unsub = subscribeWS((msg) => {
+      if (["ROAD_STATUS_CHANGED", "EMERGENCY_DECLARED", "EMERGENCY_ENDED"].includes(msg.type)) {
+        api.get("/dashboard/summary").then((r) => setRoads(r.data.roads)).catch(() => {});
+        api.get("/emergency-zones").then((r) => setZones(r.data)).catch(() => {});
+      }
+    });
+    return unsub;
   }, []);
 
   const calculate = useCallback(async (q) => {
@@ -94,11 +122,12 @@ export default function Routes() {
   const routeGeoJSON = result
     ? {
         type: "FeatureCollection",
-        features: result.recommended_route.segments.map((s) => ({
-          type: "Feature",
-          geometry: s.geometry,
-          properties: { status: s.status, name: s.name },
-        })),
+        features: [
+          { type: "Feature", geometry: { type: "LineString", coordinates: result.recommended_route.polyline }, properties: { status: "MAIN", name: "Route" } },
+          ...result.recommended_route.segments
+            .filter((s) => !["OPEN", "LOCAL"].includes(s.status))
+            .map((s) => ({ type: "Feature", geometry: s.geometry, properties: { status: s.status, name: s.name } })),
+        ],
       }
     : null;
 
@@ -239,8 +268,11 @@ export default function Routes() {
                 </div>
 
                 <div>
-                  <div className="text-[10px] uppercase tracking-widest text-neutral-500 font-semibold mb-2">Segments</div>
+                  <div className="text-[10px] uppercase tracking-widest text-neutral-500 font-semibold mb-2">Monitored corridors on route</div>
                   <div className="space-y-1.5" data-testid="route-segments">
+                    {rr.segments.length === 0 && (
+                      <div className="text-[12px] text-neutral-500 py-2" data-testid="route-segments-empty">No monitored corridors crossed — clear route.</div>
+                    )}
                     {rr.segments.map((s) => (
                       <div key={s.road_id} className="flex items-center gap-2.5 p-2.5 border hairline rounded-md text-[12px]" data-testid={`route-segment-${s.road_id}`}>
                         <span className="w-6 h-[4px] rounded-full flex-shrink-0" style={{ background: s.status === "LOCAL" ? "#64748B" : (s.status === "OPEN" ? "#1A73E8" : STATUS_COLORS[s.status] || STATUS_COLORS.UNKNOWN) }} />
