@@ -9,6 +9,12 @@ North Eastern Region Intelligence System (SIH26002). This iteration: white/insti
 - Field Officer (mobile reporting)
 - Public User (read-only)
 
+## Iteration 9 (DONE — 2026-02) — Backend modularization + fleet split view
+- server.py (1746 lines) split into: core/{database,security,ws}.py, seed.py (demo datasets + seeding), services.py (reroute helper), routers/{auth,dashboard,roads,vehicles,predictions,routing,reports,feeds,incidents,notifications,trips,escalations}.py; thin server.py app assembly
+- Fleet page (/vehicles): split view — table left, live map with all truck locations right (gov + field only; risk-color legend); row click centers map + opens detail drawer
+- Updated stale tests: test_dashboard road count 10→12, test_iter4 alert kinds superset
+- 52+ pytest passing; 2 stale assertions fixed (not refactor regressions)
+
 ## Iteration 7 (DONE — 2026-02) — Real routing + WebSocket push
 - OSRM (public demo server, real OpenStreetMap road network) for route geometry/distance/ETA; corridor statuses overlaid by proximity; demo graph kept as offline fallback
 - Route auto-fit bounds, Google-blue MAIN line + status overlays

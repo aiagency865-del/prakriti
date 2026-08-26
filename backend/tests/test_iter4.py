@@ -46,7 +46,7 @@ class TestAlerts:
         d = r.json()
         assert isinstance(d, list)
         kinds = {a.get("kind") for a in d}
-        assert kinds.issubset({"INCIDENT", "FIELD_REPORT", "GOVERNMENT_ACTION"})
+        assert kinds.issubset({"INCIDENT", "FIELD_REPORT", "PUBLIC_REPORT", "NOTIFICATION", "EMERGENCY", "WEATHER", "HAZARD", "GOVERNMENT_ACTION"})
         # verify all three kinds exist in seeded data
         assert "INCIDENT" in kinds
         assert "GOVERNMENT_ACTION" in kinds
@@ -105,11 +105,16 @@ class TestPropagation:
         assert rep_id.startswith("FR-")
         assert rep["status"] == "SUBMITTED"
 
-        # 2) logistics sees it in alerts as FIELD_REPORT
+        # 2) UNVERIFIED field report is NOT visible to logistics (role-filtered feed, iter5+)
         time.sleep(0.5)
         alerts = requests.get(f"{API}/alerts", headers=h(logistics_token)).json()
         fr_alerts = [a for a in alerts if a.get("kind") == "FIELD_REPORT" and a.get("id") == rep_id]
-        assert len(fr_alerts) >= 1, "logistics should see new FIELD_REPORT in alerts"
+        assert len(fr_alerts) == 0, "unverified FIELD_REPORT must not leak to logistics"
+
+        # 2b) gov sees the unverified report (privileged roles)
+        gov_alerts = requests.get(f"{API}/alerts", headers=h(gov_token)).json()
+        gov_fr = [a for a in gov_alerts if a.get("kind") == "FIELD_REPORT" and a.get("id") == rep_id]
+        assert len(gov_fr) >= 1, "gov should see new FIELD_REPORT in alerts"
 
         # 3) public advisories should NOT contain unverified field report
         pub = requests.get(f"{API}/public/advisories", headers=h(public_token)).json()
@@ -144,3 +149,12 @@ class TestPropagation:
         gov_actions = [a for a in alerts2 if a.get("kind") == "GOVERNMENT_ACTION"]
         assert any(inc_id in (a.get("title") or "") or "VERIFIED" in (a.get("title") or "")
                    for a in gov_actions)
+
+        # 7) after verification, logistics + public DO see the FIELD_REPORT in alerts
+        time.sleep(0.5)
+        alerts3 = requests.get(f"{API}/alerts", headers=h(logistics_token)).json()
+        assert any(a.get("kind") == "FIELD_REPORT" and a.get("id") == rep_id and a.get("status") == "VERIFIED"
+                   for a in alerts3), "verified FIELD_REPORT should be visible to logistics"
+        alerts4 = requests.get(f"{API}/alerts", headers=h(public_token)).json()
+        assert any(a.get("kind") == "FIELD_REPORT" and a.get("id") == rep_id
+                   for a in alerts4), "verified FIELD_REPORT should be visible to public"

@@ -43,6 +43,7 @@ export default function Vehicles() {
   const [statusFilter, setStatusFilter] = useState("ALL");
   const [selected, setSelected] = useState(null);
   const [addOpen, setAddOpen] = useState(false);
+  const canSeeMap = user && ["SUPER_ADMIN", "GOVERNMENT_ADMIN", "GOVERNMENT_OFFICER", "DISTRICT_OFFICER", "FIELD_OFFICER"].includes(user.role);
 
   const fetchAll = useCallback(async () => {
     try {
@@ -105,7 +106,9 @@ export default function Vehicles() {
           <div className="bg-red-50 border-b border-red-200 px-5 py-2 text-[12px] text-red-800" data-testid="vehicles-error">{error}</div>
         )}
 
-        <div className="flex-1 overflow-auto p-5">
+        <div className="flex-1 flex min-h-0">
+          {/* Left: fleet table */}
+          <div className="flex-1 overflow-auto p-5 min-w-0">
           <div className="bg-white border hairline rounded-md overflow-hidden">
             <table className="w-full text-[13px]" data-testid="vehicles-table">
               <thead>
@@ -175,6 +178,31 @@ export default function Vehicles() {
               </tbody>
             </table>
           </div>
+          </div>
+
+          {/* Right: live map with all truck locations — gov & field only */}
+          {canSeeMap && (
+            <div className="w-[42%] flex-shrink-0 border-l hairline relative bg-[var(--surface-sunken)]" data-testid="fleet-map-pane">
+              {data ? (
+                <NerMap
+                  roads={data.roads}
+                  vehicles={data.vehicles}
+                  incidents={[]}
+                  layers={{ roads: true, vehicles: true, incidents: false }}
+                  center={selected ? [selected.lng, selected.lat] : undefined}
+                  zoom={selected ? 9 : undefined}
+                />
+              ) : (
+                <div className="absolute inset-0 bg-[var(--surface-sunken)] animate-pulse" />
+              )}
+              <div className="absolute top-3 left-3 bg-white/95 border hairline rounded-md shadow-sm px-3 py-2 z-10 text-[10.5px] text-neutral-600">
+                <div className="text-[10px] uppercase tracking-widest font-semibold text-neutral-500 mb-1">Live fleet locations</div>
+                <div className="flex items-center gap-1.5"><span className="status-dot" style={{ background: "#1E8E3E" }} /> Low risk</div>
+                <div className="flex items-center gap-1.5 mt-0.5"><span className="status-dot" style={{ background: "#C77C00" }} /> Medium risk</div>
+                <div className="flex items-center gap-1.5 mt-0.5"><span className="status-dot" style={{ background: "#C4281C" }} /> High risk</div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

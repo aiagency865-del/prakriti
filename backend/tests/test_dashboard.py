@@ -43,7 +43,7 @@ def test_dashboard_gov_admin_shape(gov_token):
     # roads
     roads = d["roads"]
     assert roads["type"] == "FeatureCollection"
-    assert len(roads["features"]) == 10
+    assert len(roads["features"]) == 12
     for f in roads["features"]:
         assert f["geometry"]["type"] == "LineString"
         assert "status" in f["properties"]
